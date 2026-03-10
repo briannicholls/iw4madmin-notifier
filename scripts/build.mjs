@@ -1,11 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { build } from 'esbuild';
+import { buildThumbnails } from './build-thumbnails.mjs';
 
 const workspaceRoot = resolve(import.meta.dirname, '..');
 const packageJsonPath = resolve(workspaceRoot, 'package.json');
 const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
 const version = String(packageJson.version || '0.0.0-dev');
+
+const thumbnailResult = await buildThumbnails(workspaceRoot);
 
 await build({
   entryPoints: [resolve(workspaceRoot, 'src/index.js')],
@@ -21,4 +24,5 @@ await build({
   }
 });
 
+console.log(`Built ${thumbnailResult.count} stretched thumbnails`);
 console.log(`Built PopulationNotifier.js with version ${version}`);

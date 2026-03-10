@@ -8,22 +8,29 @@ export const NOTIFY_MENTION_PREFIX = '@here';
 const DEFAULT_ALERTS = [
   {
     threshold: 1,
-    message: '[Join] {serverName} has activity ({playerCount}/{maxPlayers}).'
+    message: '{serverName} is getting active.'
   },
   {
     threshold: 6,
-    message: '[Warmup] {serverName} reached {playerCount}/{maxPlayers} players.'
+    message: '{serverName} is filling up.'
   },
   {
     threshold: 11,
-    message: '[Hot] {serverName} reached {playerCount}/{maxPlayers} players. {slotsRemaining} slots left.'
+    message: '{serverName} is getting crowded.'
   }
+];
+
+const LEGACY_DEFAULT_ALERT_MESSAGES = [
+  '[Join] {serverName} has activity ({playerCount}/{maxPlayers}).',
+  '[Warmup] {serverName} reached {playerCount}/{maxPlayers} players.',
+  '[Hot] {serverName} reached {playerCount}/{maxPlayers} players. {slotsRemaining} slots left.'
 ];
 
 export const defaultConfig = {
   alerts: DEFAULT_ALERTS.map(copyAlert),
   discordBotToken: '',
   discordChannelId: '',
+  thumbnailBaseUrl: '',
   mapImageUrls: {}
 };
 
@@ -36,12 +43,23 @@ function copyAlert(alert) {
 
 function defaultMessageForThreshold(threshold) {
   if (threshold <= 1) {
-    return '[Join] {serverName} has activity ({playerCount}/{maxPlayers}).';
+    return '{serverName} is getting active.';
   }
   if (threshold <= 6) {
-    return '[Warmup] {serverName} reached {playerCount}/{maxPlayers} players.';
+    return '{serverName} is filling up.';
   }
-  return '[Hot] {serverName} reached {playerCount}/{maxPlayers} players. {slotsRemaining} slots left.';
+  return '{serverName} is getting crowded.';
+}
+
+function normalizeAlertMessage(threshold, message) {
+  const raw = String(message == null ? '' : message).trim();
+  if (!raw) return defaultMessageForThreshold(threshold);
+
+  if (LEGACY_DEFAULT_ALERT_MESSAGES.indexOf(raw) !== -1) {
+    return defaultMessageForThreshold(threshold);
+  }
+
+  return raw;
 }
 
 function sanitizeAlerts(inputAlerts) {
@@ -54,7 +72,7 @@ function sanitizeAlerts(inputAlerts) {
     if (thresholdRaw < 1) continue;
 
     const threshold = thresholdRaw > MAX_PLAYERS ? MAX_PLAYERS : thresholdRaw;
-    const message = String(current.message == null ? '' : current.message).trim() || defaultMessageForThreshold(threshold);
+    const message = normalizeAlertMessage(threshold, current.message);
     dedupe[String(threshold)] = {
       threshold: threshold,
       message: message
@@ -103,6 +121,7 @@ export function sanitizeConfig(rawConfig) {
     alerts: sanitizeAlerts(source.alerts),
     discordBotToken: String(source.discordBotToken == null ? '' : source.discordBotToken).trim(),
     discordChannelId: String(source.discordChannelId == null ? '' : source.discordChannelId).trim(),
+    thumbnailBaseUrl: String(source.thumbnailBaseUrl == null ? '' : source.thumbnailBaseUrl).trim(),
     mapImageUrls: sanitizeMapImageUrls(source.mapImageUrls)
   };
 }

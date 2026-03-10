@@ -127,21 +127,27 @@ var _b = (() => {
   var DEFAULT_ALERTS = [
     {
       threshold: 1,
-      message: "[Join] {serverName} has activity ({playerCount}/{maxPlayers})."
+      message: "{serverName} is getting active."
     },
     {
       threshold: 6,
-      message: "[Warmup] {serverName} reached {playerCount}/{maxPlayers} players."
+      message: "{serverName} is filling up."
     },
     {
       threshold: 11,
-      message: "[Hot] {serverName} reached {playerCount}/{maxPlayers} players. {slotsRemaining} slots left."
+      message: "{serverName} is getting crowded."
     }
+  ];
+  var LEGACY_DEFAULT_ALERT_MESSAGES = [
+    "[Join] {serverName} has activity ({playerCount}/{maxPlayers}).",
+    "[Warmup] {serverName} reached {playerCount}/{maxPlayers} players.",
+    "[Hot] {serverName} reached {playerCount}/{maxPlayers} players. {slotsRemaining} slots left."
   ];
   var defaultConfig = {
     alerts: DEFAULT_ALERTS.map(copyAlert),
     discordBotToken: "",
     discordChannelId: "",
+    thumbnailBaseUrl: "",
     mapImageUrls: {}
   };
   function copyAlert(alert) {
@@ -152,12 +158,20 @@ var _b = (() => {
   }
   function defaultMessageForThreshold(threshold) {
     if (threshold <= 1) {
-      return "[Join] {serverName} has activity ({playerCount}/{maxPlayers}).";
+      return "{serverName} is getting active.";
     }
     if (threshold <= 6) {
-      return "[Warmup] {serverName} reached {playerCount}/{maxPlayers} players.";
+      return "{serverName} is filling up.";
     }
-    return "[Hot] {serverName} reached {playerCount}/{maxPlayers} players. {slotsRemaining} slots left.";
+    return "{serverName} is getting crowded.";
+  }
+  function normalizeAlertMessage(threshold, message) {
+    const raw = String(message == null ? "" : message).trim();
+    if (!raw) return defaultMessageForThreshold(threshold);
+    if (LEGACY_DEFAULT_ALERT_MESSAGES.indexOf(raw) !== -1) {
+      return defaultMessageForThreshold(threshold);
+    }
+    return raw;
   }
   function sanitizeAlerts(inputAlerts) {
     const rawAlerts = Array.isArray(inputAlerts) ? inputAlerts : [];
@@ -167,7 +181,7 @@ var _b = (() => {
       const thresholdRaw = parseIntSafe(current.threshold, -1);
       if (thresholdRaw < 1) continue;
       const threshold = thresholdRaw > MAX_PLAYERS ? MAX_PLAYERS : thresholdRaw;
-      const message = String(current.message == null ? "" : current.message).trim() || defaultMessageForThreshold(threshold);
+      const message = normalizeAlertMessage(threshold, current.message);
       dedupe[String(threshold)] = {
         threshold,
         message
@@ -205,6 +219,7 @@ var _b = (() => {
       alerts: sanitizeAlerts(source.alerts),
       discordBotToken: String(source.discordBotToken == null ? "" : source.discordBotToken).trim(),
       discordChannelId: String(source.discordChannelId == null ? "" : source.discordChannelId).trim(),
+      thumbnailBaseUrl: String(source.thumbnailBaseUrl == null ? "" : source.thumbnailBaseUrl).trim(),
       mapImageUrls: sanitizeMapImageUrls(source.mapImageUrls)
     };
   }
@@ -241,6 +256,295 @@ var _b = (() => {
     const value = source[key];
     if (!value) return "";
     return String(value);
+  }
+
+  // src/event-extractors.js
+  function extractClientFromEvent(eventObj) {
+    if (!eventObj) return null;
+    if (eventObj.client) return eventObj.client;
+    if (eventObj.Client) return eventObj.Client;
+    if (eventObj.origin) return eventObj.origin;
+    if (eventObj.authorizedClient) return eventObj.authorizedClient;
+    if (eventObj.AuthorizedClient) return eventObj.AuthorizedClient;
+    const clientState = eventObj.clientState || eventObj.ClientState;
+    if (clientState) {
+      if (clientState.client) return clientState.client;
+      if (clientState.Client) return clientState.Client;
+      return clientState;
+    }
+    return null;
+  }
+  function extractServerFromClient(client) {
+    if (!client) return null;
+    if (client.currentServer) return client.currentServer;
+    if (client.CurrentServer) return client.CurrentServer;
+    if (client.server) return client.server;
+    if (client.Server) return client.Server;
+    return null;
+  }
+  function extractServerFromEvent(eventObj) {
+    if (!eventObj) return null;
+    if (eventObj.server) return eventObj.server;
+    if (eventObj.Server) return eventObj.Server;
+    if (eventObj.currentServer) return eventObj.currentServer;
+    if (eventObj.CurrentServer) return eventObj.CurrentServer;
+    const client = extractClientFromEvent(eventObj);
+    return extractServerFromClient(client);
+  }
+  function extractNetworkIdFromClient(client) {
+    if (!client) return "";
+    return normalizeNetworkId(
+      client.networkId || client.NetworkId || client.networkID || client.NetworkID || client.xuid || client.Xuid || client.guid || client.Guid || null
+    );
+  }
+
+  // src/server-metadata.js
+  function textFromUnknown(value) {
+    if (value == null) return "";
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      return cleanName(String(value));
+    }
+    try {
+      if (typeof value.toString === "function") {
+        const rendered = cleanName(value.toString());
+        if (rendered && rendered !== "[object Object]") return rendered;
+      }
+    } catch (_) {
+    }
+    return "";
+  }
+  function pickCleanString(values) {
+    const list = Array.isArray(values) ? values : [];
+    for (let i = 0; i < list.length; i++) {
+      const cleaned = textFromUnknown(list[i]);
+      if (cleaned) return cleaned;
+    }
+    return "";
+  }
+  function listKeys(value, maxCount) {
+    if (!value) return "(none)";
+    const keys = [];
+    try {
+      const own = Object.keys(value);
+      for (let i = 0; i < own.length; i++) keys.push(String(own[i]));
+    } catch (_) {
+    }
+    try {
+      for (const key in value) {
+        keys.push(String(key));
+      }
+    } catch (_) {
+    }
+    const unique = Array.from(new Set(keys)).sort();
+    if (unique.length === 0) return "(none)";
+    const limit = Math.max(10, parseIntSafe(maxCount, 80));
+    return unique.slice(0, limit).join(",") + (unique.length > limit ? ",...(truncated)" : "");
+  }
+  function mergeNamedInfo(primary, secondary) {
+    const left = primary || {};
+    const right = secondary || {};
+    return {
+      readable: pickCleanString([left.readable, right.readable]),
+      slug: pickCleanString([left.slug, right.slug])
+    };
+  }
+  function extractMapInfoFromObject(mapValue) {
+    if (!mapValue) {
+      return { readable: "", slug: "" };
+    }
+    if (typeof mapValue === "string") {
+      return {
+        readable: "",
+        slug: cleanName(mapValue)
+      };
+    }
+    return {
+      readable: pickCleanString([
+        mapValue.alias,
+        mapValue.Alias,
+        mapValue.displayName,
+        mapValue.DisplayName,
+        mapValue.localizedName,
+        mapValue.LocalizedName
+      ]),
+      slug: pickCleanString([
+        mapValue.name,
+        mapValue.Name,
+        mapValue.mapName,
+        mapValue.MapName,
+        mapValue.slug,
+        mapValue.Slug,
+        mapValue.code,
+        mapValue.Code,
+        mapValue.id,
+        mapValue.Id,
+        mapValue
+      ])
+    };
+  }
+  function extractMapInfoFromServer(server) {
+    if (!server) {
+      return { readable: "", slug: "" };
+    }
+    const fromCurrentMap = extractMapInfoFromObject(server.currentMap || server.CurrentMap);
+    const fromMap = extractMapInfoFromObject(server.map || server.Map);
+    const merged = mergeNamedInfo(fromCurrentMap, fromMap);
+    return {
+      readable: pickCleanString([
+        merged.readable,
+        server.mapAlias,
+        server.MapAlias,
+        server.currentMapAlias,
+        server.CurrentMapAlias
+      ]),
+      slug: pickCleanString([
+        merged.slug,
+        server.mapName,
+        server.MapName,
+        server.currentMapName,
+        server.CurrentMapName
+      ])
+    };
+  }
+  function extractMapInfoFromEvent(eventObj) {
+    if (!eventObj) {
+      return { readable: "", slug: "" };
+    }
+    const direct = {
+      readable: pickCleanString([
+        eventObj.mapAlias,
+        eventObj.MapAlias,
+        eventObj.currentMapAlias,
+        eventObj.CurrentMapAlias
+      ]),
+      slug: pickCleanString([
+        eventObj.mapName,
+        eventObj.MapName,
+        eventObj.newMap,
+        eventObj.NewMap,
+        eventObj.currentMapName,
+        eventObj.CurrentMapName
+      ])
+    };
+    const fromObject = extractMapInfoFromObject(
+      eventObj.currentMap || eventObj.CurrentMap || eventObj.newCurrentMap || eventObj.NewCurrentMap
+    );
+    const fromServer = extractMapInfoFromServer(extractServerFromEvent(eventObj));
+    return mergeNamedInfo(direct, mergeNamedInfo(fromObject, fromServer));
+  }
+  function extractModeInfoFromServer(server) {
+    if (!server) {
+      return { readable: "", slug: "" };
+    }
+    return {
+      readable: pickCleanString([
+        server.gametypeName,
+        server.GametypeName,
+        server.gameTypeName,
+        server.GameTypeName,
+        server.gameModeName,
+        server.GameModeName,
+        server.modeName,
+        server.ModeName
+      ]),
+      slug: pickCleanString([
+        server.gameType,
+        server.GameType,
+        server.gametype,
+        server.Gametype,
+        server.gameMode,
+        server.GameMode,
+        server.mode,
+        server.Mode,
+        server.gameTypeCode,
+        server.GameTypeCode,
+        server.gametypeCode,
+        server.GametypeCode
+      ])
+    };
+  }
+  function extractModeInfoFromEvent(eventObj) {
+    if (!eventObj) {
+      return { readable: "", slug: "" };
+    }
+    const direct = {
+      readable: pickCleanString([
+        eventObj.gametypeName,
+        eventObj.GametypeName,
+        eventObj.gameTypeName,
+        eventObj.GameTypeName,
+        eventObj.gameModeName,
+        eventObj.GameModeName
+      ]),
+      slug: pickCleanString([
+        eventObj.gameType,
+        eventObj.GameType,
+        eventObj.gametype,
+        eventObj.Gametype,
+        eventObj.gameMode,
+        eventObj.GameMode
+      ])
+    };
+    const fromServer = extractModeInfoFromServer(extractServerFromEvent(eventObj));
+    return mergeNamedInfo(direct, fromServer);
+  }
+  function formatNamedInfoForStatus(info, unknownValue) {
+    const readable = pickCleanString([info && info.readable]);
+    const slug = pickCleanString([info && info.slug]);
+    if (readable && slug && readable.toLowerCase() !== slug.toLowerCase()) {
+      return readable + " (`" + slug + "`)";
+    }
+    if (readable) return readable;
+    if (slug) return "`" + slug + "`";
+    return unknownValue || "unknown";
+  }
+
+  // src/server-discovery.js
+  function collectServersFromManager(manager) {
+    if (!manager) return [];
+    const methodNames = [
+      "getServers",
+      "GetServers",
+      "getActiveServers",
+      "GetActiveServers"
+    ];
+    const propertyNames = [
+      "servers",
+      "Servers",
+      "activeServers",
+      "ActiveServers",
+      "gameServers",
+      "GameServers"
+    ];
+    const gathered = [];
+    for (let i = 0; i < methodNames.length; i++) {
+      const methodName = methodNames[i];
+      if (typeof manager[methodName] !== "function") continue;
+      try {
+        const rows = toArray(manager[methodName]());
+        for (let j = 0; j < rows.length; j++) {
+          if (rows[j]) gathered.push(rows[j]);
+        }
+      } catch (_) {
+      }
+    }
+    for (let i = 0; i < propertyNames.length; i++) {
+      const propertyName = propertyNames[i];
+      const rows = toArray(manager[propertyName]);
+      for (let j = 0; j < rows.length; j++) {
+        if (rows[j]) gathered.push(rows[j]);
+      }
+    }
+    const unique = {};
+    const out = [];
+    for (let i = 0; i < gathered.length; i++) {
+      const server = gathered[i];
+      const key = getServerKey(server);
+      if (unique[key]) continue;
+      unique[key] = true;
+      out.push(server);
+    }
+    return out;
   }
 
   // src/notifiers/discord.js
@@ -597,6 +901,485 @@ var _b = (() => {
     };
   }
 
+  // src/generated/t6-thumbnail-manifest.js
+  var T6_THUMBNAIL_FILES = {
+    "buried_zclassic_processing": "loadscreen_buried_zclassic_processing.jpg",
+    "buried_zcleansed_street": "loadscreen_buried_zcleansed_street.jpg",
+    "buried_zgrief_street": "loadscreen_buried_zgrief_street.jpg",
+    "dierise": "loadscreen_dierise.jpg",
+    "mp_bridge": "loadscreen_mp_bridge.jpg",
+    "mp_carrier": "loadscreen_mp_carrier.jpg",
+    "mp_castaway": "loadscreen_mp_castaway.jpg",
+    "mp_concert": "loadscreen_mp_concert.jpg",
+    "mp_dig": "loadscreen_mp_dig.jpg",
+    "mp_dockside": "loadscreen_mp_dockside.jpg",
+    "mp_downhill": "loadscreen_mp_downhill.jpg",
+    "mp_drone": "loadscreen_mp_drone.jpg",
+    "mp_express": "loadscreen_mp_express.jpg",
+    "mp_frostbite": "loadscreen_mp_frostbite.jpg",
+    "mp_hijacked": "loadscreen_mp_hijacked.jpg",
+    "mp_hydro": "loadscreen_mp_hydro.jpg",
+    "mp_la": "loadscreen_mp_la.jpg",
+    "mp_magma": "loadscreen_mp_magma.jpg",
+    "mp_meltdown": "loadscreen_mp_meltdown.jpg",
+    "mp_mirage": "loadscreen_mp_mirage.jpg",
+    "mp_nightclub": "loadscreen_mp_nightclub.jpg",
+    "mp_nuketown_2020": "loadscreen_mp_nuketown_2020.jpg",
+    "mp_overflow": "loadscreen_mp_overflow.jpg",
+    "mp_paintball": "loadscreen_mp_paintball.jpg",
+    "mp_podville": "loadscreen_mp_podville.jpg",
+    "mp_raid": "loadscreen_mp_raid.jpg",
+    "mp_skate": "loadscreen_mp_skate.jpg",
+    "mp_slums": "loadscreen_mp_slums.jpg",
+    "mp_socotra": "loadscreen_mp_socotra.jpg",
+    "mp_studio": "loadscreen_mp_studio.jpg",
+    "mp_takeoff": "loadscreen_mp_takeoff.jpg",
+    "mp_turbine": "loadscreen_mp_turbine.jpg",
+    "mp_uplink": "loadscreen_mp_uplink.jpg",
+    "mp_vertigo": "loadscreen_mp_vertigo.jpg",
+    "mp_village": "loadscreen_mp_village.jpg",
+    "transit_classic": "loadscreen_transit_classic.jpg",
+    "transit_dr_returned_diner": "loadscreen_transit_dr_returned_diner.jpg",
+    "transit_grief_busdepot": "loadscreen_transit_grief_busdepot.jpg",
+    "transit_grief_farm": "loadscreen_transit_grief_farm.jpg",
+    "transit_grief_town": "loadscreen_transit_grief_town.jpg",
+    "transit_standard_busdepot": "loadscreen_transit_standard_busdepot.jpg",
+    "transit_standard_farm": "loadscreen_transit_standard_farm.jpg",
+    "transit_standard_town": "loadscreen_transit_standard_town.jpg",
+    "zm_factory": "loadscreen_zm_factory.jpg",
+    "zm_hellcatraz": "loadscreen_zm_hellcatraz.jpg",
+    "zm_meat": "loadscreen_zm_meat.jpg",
+    "zm_moon": "loadscreen_zm_moon.jpg",
+    "zm_nuketown": "loadscreen_zm_nuketown.jpg",
+    "zm_prototype": "loadscreen_zm_prototype.jpg",
+    "zombie_le_tombeau": "loadscreen_zombie_le_tombeau.jpg"
+  };
+
+  // src/t6-thumbnails.js
+  function normalizeBaseUrl(value) {
+    const raw = String(value == null ? "" : value).trim();
+    if (!raw) return "";
+    return raw.replace(/\/+$/, "");
+  }
+  function resolveT6ThumbnailUrl(baseUrl, mapSlug) {
+    const base = normalizeBaseUrl(baseUrl);
+    if (!base) return "";
+    const slug = normalizeMapKey(mapSlug);
+    if (!slug) return "";
+    const fileName = T6_THUMBNAIL_FILES[slug];
+    if (!fileName) return "";
+    return base + "/" + fileName;
+  }
+
+  // src/status-channel.js
+  function statusColor(plugin2, playerCount) {
+    const count = parseIntSafe(playerCount, 0);
+    const alerts = plugin2.config && plugin2.config.alerts ? plugin2.config.alerts : [];
+    let highestThreshold = 0;
+    for (let i = 0; i < alerts.length; i++) {
+      const threshold = parseIntSafe(alerts[i].threshold, 0);
+      if (count >= threshold && threshold > highestThreshold) highestThreshold = threshold;
+    }
+    if (highestThreshold >= 11) return 15158332;
+    if (highestThreshold >= 6) return 15844367;
+    if (highestThreshold >= 1) return 3066993;
+    return 3447003;
+  }
+  function buildStatusPayload(plugin2, serverName, playerCount, mapInfo, modeInfo) {
+    const mapReadable = pickCleanString([mapInfo && mapInfo.readable]);
+    const mapSlug = pickCleanString([mapInfo && mapInfo.slug]);
+    const mapText = mapReadable || "unknown";
+    const modeText = formatNamedInfoForStatus(modeInfo, "unknown");
+    const imageLookupName = mapSlug || mapReadable;
+    const imageUrl = resolveMapImageUrl(plugin2.config && plugin2.config.mapImageUrls, imageLookupName) || resolveT6ThumbnailUrl(plugin2.config && plugin2.config.thumbnailBaseUrl, mapSlug);
+    const embed = {
+      title: serverName,
+      description: "Players: **" + playerCount + "/" + MAX_PLAYERS + "**\nMap: " + mapText + "\nMode: " + modeText,
+      color: statusColor(plugin2, playerCount)
+    };
+    if (imageUrl) {
+      embed.image = { url: imageUrl };
+    }
+    return {
+      content: "",
+      embeds: [embed],
+      allowed_mentions: { parse: [] }
+    };
+  }
+  function ensureStatusSyncState(plugin2, serverKey) {
+    let sync = plugin2.runtime.statusSyncByServer[serverKey];
+    if (!sync) {
+      sync = {
+        inFlight: false,
+        pending: null
+      };
+      plugin2.runtime.statusSyncByServer[serverKey] = sync;
+    }
+    return sync;
+  }
+  function dispatchStatusUpsert(plugin2, serverKey, update) {
+    const sync = ensureStatusSyncState(plugin2, serverKey);
+    sync.inFlight = true;
+    const existingMessageId = plugin2.runtime.statusMessageIdByServer[serverKey] || "";
+    plugin2.dispatcher.upsertMessage(
+      plugin2,
+      existingMessageId,
+      update.payload,
+      { type: "status", serverKey },
+      (ok, messageId, errorText, details) => {
+        sync.inFlight = false;
+        if (!ok) {
+          const retryAfterMs = Math.max(1e3, parseIntSafe(details && details.retryAfterMs, 5e3));
+          plugin2.runtime.statusRetryAtByServer[serverKey] = Date.now() + retryAfterMs;
+          plugin2.logger.logWarning(
+            "{Name}: Failed to upsert status message for {Server} - {Error} (retry_ms={RetryMs})",
+            plugin2.name,
+            serverKey,
+            String(errorText || "unknown upsert error"),
+            retryAfterMs
+          );
+          if (plugin2.pluginHelper && typeof plugin2.pluginHelper.requestNotifyAfterDelay === "function") {
+            plugin2.pluginHelper.requestNotifyAfterDelay(retryAfterMs, () => {
+              ensureStatusMessage(plugin2, serverKey, update.serverName, update.playerCount, update.mapInfo, update.modeInfo);
+            });
+          }
+        } else {
+          plugin2.runtime.statusRetryAtByServer[serverKey] = 0;
+          if (messageId) {
+            plugin2.runtime.statusMessageIdByServer[serverKey] = String(messageId);
+          }
+          plugin2.runtime.statusFingerprintByServer[serverKey] = update.fingerprint;
+        }
+        const pending = sync.pending;
+        sync.pending = null;
+        if (pending) {
+          ensureStatusMessage(
+            plugin2,
+            serverKey,
+            pending.serverName,
+            pending.playerCount,
+            pending.mapInfo,
+            pending.modeInfo
+          );
+        }
+      }
+    );
+  }
+  function ensureStatusMessage(plugin2, serverKey, serverName, playerCount, mapInfo, modeInfo) {
+    if (!plugin2.dispatcher || plugin2.dispatcher.count === 0) return;
+    const existingMessageId = plugin2.runtime.statusMessageIdByServer[serverKey] || "";
+    if (!existingMessageId && playerCount <= 0) {
+      return;
+    }
+    const payload = buildStatusPayload(plugin2, serverName, playerCount, mapInfo, modeInfo);
+    const fingerprint = JSON.stringify(payload);
+    const existingFingerprint = plugin2.runtime.statusFingerprintByServer[serverKey] || "";
+    if (existingMessageId && existingFingerprint === fingerprint) {
+      return;
+    }
+    const update = {
+      serverName,
+      playerCount,
+      mapInfo,
+      modeInfo,
+      payload,
+      fingerprint
+    };
+    const sync = ensureStatusSyncState(plugin2, serverKey);
+    if (sync.inFlight) {
+      sync.pending = update;
+      return;
+    }
+    const nowMs = Date.now();
+    const retryAtMs = parseIntSafe(plugin2.runtime.statusRetryAtByServer[serverKey], 0);
+    if (retryAtMs > nowMs) {
+      sync.pending = update;
+      return;
+    }
+    dispatchStatusUpsert(plugin2, serverKey, update);
+  }
+
+  // src/threshold-notify.js
+  function canSendGlobalNotify(plugin2) {
+    const nowMs = Date.now();
+    const lastAtMs = parseIntSafe(plugin2.runtime.globalNotifyLastAtMs, 0);
+    if (lastAtMs <= 0) {
+      return {
+        allowed: true,
+        remainingMs: 0
+      };
+    }
+    const elapsedMs = nowMs - lastAtMs;
+    const remainingMs = GLOBAL_NOTIFY_COOLDOWN_MS - elapsedMs;
+    if (remainingMs <= 0) {
+      return {
+        allowed: true,
+        remainingMs: 0
+      };
+    }
+    return {
+      allowed: false,
+      remainingMs
+    };
+  }
+  function setGlobalNotifyNow(plugin2) {
+    plugin2.runtime.globalNotifyLastAtMs = Date.now();
+  }
+  function remainingCooldownMinutes(plugin2) {
+    const cooldown = canSendGlobalNotify(plugin2);
+    if (cooldown.allowed) return 0;
+    return Math.ceil(cooldown.remainingMs / 6e4);
+  }
+  function maybeDeleteNotifyForLowPopulation(plugin2, serverKey, playerCount, source) {
+    if (playerCount >= NOTIFY_CLEAR_BELOW_COUNT) return;
+    const messageId = plugin2.runtime.notifyMessageIdByServer[serverKey] || "";
+    if (!messageId) return;
+    if (plugin2.runtime.notifyDeleteInFlightByServer[serverKey]) return;
+    plugin2.runtime.notifyDeleteInFlightByServer[serverKey] = true;
+    if (!plugin2.dispatcher || plugin2.dispatcher.count === 0) {
+      plugin2.runtime.notifyDeleteInFlightByServer[serverKey] = false;
+      return;
+    }
+    plugin2.logger.logInformation(
+      "{Name}: Population below {Minimum} on {Server} (count={Count}, source={Source}); deleting active notify message",
+      plugin2.name,
+      NOTIFY_CLEAR_BELOW_COUNT,
+      serverKey,
+      playerCount,
+      String(source || "unknown")
+    );
+    plugin2.dispatcher.deleteMessage(plugin2, messageId, { type: "notify", serverKey }, (ok, errorText) => {
+      plugin2.runtime.notifyDeleteInFlightByServer[serverKey] = false;
+      if (!ok) {
+        plugin2.logger.logWarning(
+          "{Name}: Failed to delete active notify message for {Server} - {Error}",
+          plugin2.name,
+          serverKey,
+          String(errorText || "unknown delete error")
+        );
+        return;
+      }
+      delete plugin2.runtime.notifyMessageIdByServer[serverKey];
+    });
+  }
+  function buildNotifyPayload(alert, serverKey, serverName, playerCount) {
+    const threshold = parseIntSafe(alert.threshold, 0);
+    const context = buildMessageContext(serverName, serverKey, playerCount, threshold);
+    let sentence = formatPopulationMessage(alert.message, context);
+    sentence = String(sentence || "").replace(/\s+/g, " ").trim();
+    if (!sentence) {
+      sentence = serverName + " is filling up.";
+    }
+    if (!/[.!?]$/.test(sentence)) {
+      sentence += ".";
+    }
+    const content = NOTIFY_MENTION_PREFIX + " " + sentence;
+    return {
+      content,
+      allowed_mentions: {
+        parse: ["everyone"]
+      }
+    };
+  }
+  function sendNotifyMessage(plugin2, alert, serverKey, serverName, playerCount, isStartup, source, done) {
+    const payload = buildNotifyPayload(alert, serverKey, serverName, playerCount);
+    const existingMessageId = plugin2.runtime.notifyMessageIdByServer[serverKey] || "";
+    plugin2.logger.logInformation(
+      "{Name}: Dispatching notify message server={Server} threshold={Threshold} startup={Startup} source={Source} existing_message_id={ExistingId}",
+      plugin2.name,
+      serverKey,
+      parseIntSafe(alert.threshold, 0),
+      isStartup === true ? "yes" : "no",
+      String(source || "unknown"),
+      existingMessageId || "(none)"
+    );
+    plugin2.dispatcher.upsertMessage(
+      plugin2,
+      existingMessageId,
+      payload,
+      { type: "notify", serverKey },
+      (ok, messageId, errorText) => {
+        if (!ok) {
+          plugin2.logger.logWarning(
+            "{Name}: Failed to dispatch notify message for {Server} - {Error}",
+            plugin2.name,
+            serverKey,
+            String(errorText || "unknown notify error")
+          );
+          if (typeof done === "function") done(false);
+          return;
+        }
+        if (messageId) {
+          plugin2.runtime.notifyMessageIdByServer[serverKey] = String(messageId);
+        }
+        plugin2.logger.logInformation(
+          "{Name}: Notify message sent server={Server} threshold={Threshold} cooldown_minutes={CooldownMinutes}",
+          plugin2.name,
+          serverKey,
+          parseIntSafe(alert.threshold, 0),
+          GLOBAL_NOTIFY_COOLDOWN_MS / 6e4
+        );
+        if (typeof done === "function") done(true);
+      }
+    );
+  }
+  function handleThresholdCrossing(plugin2, alert, serverKey, serverName, playerCount, isStartup, source) {
+    if (!plugin2.dispatcher || plugin2.dispatcher.count === 0) {
+      if (!plugin2.runtime.missingNotifierWarned) {
+        plugin2.logger.logWarning("{Name}: Alert suppressed because no notifier destination is configured.", plugin2.name);
+        plugin2.runtime.missingNotifierWarned = true;
+      }
+      return;
+    }
+    if (plugin2.runtime.globalNotifyDispatchInFlight) {
+      plugin2.logger.logInformation(
+        "{Name}: Notify suppressed because another notify dispatch is currently in-flight server={Server} threshold={Threshold} source={Source}",
+        plugin2.name,
+        serverKey,
+        parseIntSafe(alert.threshold, 0),
+        String(source || "unknown")
+      );
+      return;
+    }
+    const cooldown = canSendGlobalNotify(plugin2);
+    if (!cooldown.allowed) {
+      const remainingMinutes = Math.ceil(cooldown.remainingMs / 6e4);
+      plugin2.logger.logInformation(
+        "{Name}: Notify suppressed by global cooldown server={Server} threshold={Threshold} remaining_minutes={Remaining} source={Source}",
+        plugin2.name,
+        serverKey,
+        parseIntSafe(alert.threshold, 0),
+        remainingMinutes,
+        String(source || "unknown")
+      );
+      return;
+    }
+    plugin2.runtime.globalNotifyDispatchInFlight = true;
+    setGlobalNotifyNow(plugin2);
+    sendNotifyMessage(plugin2, alert, serverKey, serverName, playerCount, isStartup, source, () => {
+      plugin2.runtime.globalNotifyDispatchInFlight = false;
+    });
+  }
+
+  // src/population-engine.js
+  function applyStartupRules(plugin2, serverKey, serverName, playerCount, state) {
+    const alerts = plugin2.config.alerts || [];
+    let highestMet = null;
+    for (let i = 0; i < alerts.length; i++) {
+      const alert = alerts[i];
+      const threshold2 = parseIntSafe(alert.threshold, 0);
+      const thresholdKey = String(threshold2);
+      if (playerCount >= threshold2) {
+        highestMet = alert;
+        state.firedByThreshold[thresholdKey] = true;
+      } else {
+        state.firedByThreshold[thresholdKey] = false;
+      }
+    }
+    if (!highestMet) {
+      plugin2.logger.logInformation(
+        "{Name}: Startup snapshot below all thresholds for {Server} (count={Count})",
+        plugin2.name,
+        serverKey,
+        playerCount
+      );
+      return;
+    }
+    if (playerCount >= MAX_PLAYERS) {
+      plugin2.logger.logInformation(
+        "{Name}: Startup snapshot at full capacity for {Server} (count={Count}); startup alert skipped",
+        plugin2.name,
+        serverKey,
+        playerCount
+      );
+      return;
+    }
+    const threshold = parseIntSafe(highestMet.threshold, 0);
+    plugin2.logger.logInformation(
+      "{Name}: Startup snapshot met threshold {Threshold} for {Server} (count={Count}); sending highest-threshold startup alert",
+      plugin2.name,
+      threshold,
+      serverKey,
+      playerCount
+    );
+    handleThresholdCrossing(plugin2, highestMet, serverKey, serverName, playerCount, true, "startup_snapshot");
+  }
+  function evaluatePopulation(plugin2, serverKey, serverName, playerCount, observationMeta) {
+    const alerts = plugin2.config.alerts || [];
+    if (alerts.length === 0) return;
+    const meta = observationMeta || {};
+    let state = plugin2.runtime.populationStateByServer[serverKey];
+    if (!state) {
+      state = {
+        initialized: false,
+        lastCount: null,
+        firedByThreshold: {}
+      };
+    }
+    maybeDeleteNotifyForLowPopulation(plugin2, serverKey, playerCount, meta.source || "unknown");
+    if (!state.initialized) {
+      plugin2.logger.logInformation(
+        "{Name}: Initial population snapshot source={Source} server={Server} count={Count} via={CountSource} thresholds={Thresholds}",
+        plugin2.name,
+        meta.source || "unknown",
+        serverKey,
+        playerCount,
+        meta.countSource || "unknown",
+        thresholdListText(alerts)
+      );
+      applyStartupRules(plugin2, serverKey, serverName, playerCount, state);
+      state.initialized = true;
+      state.lastCount = playerCount;
+      plugin2.runtime.populationStateByServer[serverKey] = state;
+      return;
+    }
+    const previousCount = parseIntSafe(state.lastCount, playerCount);
+    if (previousCount !== playerCount) {
+      plugin2.logger.logInformation(
+        "{Name}: Population changed source={Source} server={Server} previous={Previous} current={Current} via={CountSource} tracked_ids={TrackedIds}",
+        plugin2.name,
+        meta.source || "unknown",
+        serverKey,
+        previousCount,
+        playerCount,
+        meta.countSource || "unknown",
+        parseIntSafe(meta.activeCount, 0)
+      );
+    }
+    for (let i = 0; i < alerts.length; i++) {
+      const alert = alerts[i];
+      const threshold = parseIntSafe(alert.threshold, 0);
+      const thresholdKey = String(threshold);
+      if (playerCount < threshold) {
+        if (state.firedByThreshold[thresholdKey]) {
+          plugin2.logger.logInformation(
+            "{Name}: Threshold reset server={Server} threshold={Threshold} count={Count}",
+            plugin2.name,
+            serverKey,
+            threshold,
+            playerCount
+          );
+        }
+        state.firedByThreshold[thresholdKey] = false;
+      }
+      const crossedUp = previousCount < threshold && playerCount >= threshold;
+      if (crossedUp && !state.firedByThreshold[thresholdKey]) {
+        plugin2.logger.logInformation(
+          "{Name}: Threshold crossed upward server={Server} threshold={Threshold} previous={Previous} current={Current}",
+          plugin2.name,
+          serverKey,
+          threshold,
+          previousCount,
+          playerCount
+        );
+        handleThresholdCrossing(plugin2, alert, serverKey, serverName, playerCount, false, meta.source || "threshold_cross");
+        state.firedByThreshold[thresholdKey] = true;
+      }
+    }
+    state.lastCount = playerCount;
+    plugin2.runtime.populationStateByServer[serverKey] = state;
+  }
+
   // src/index.js
   var PLUGIN_VERSION = true ? "1.0.0" : "0.0.0-dev";
   function configsMatch(left, right) {
@@ -605,70 +1388,6 @@ var _b = (() => {
     } catch (_) {
       return false;
     }
-  }
-  function extractClientFromEvent(eventObj) {
-    if (!eventObj) return null;
-    if (eventObj.client) return eventObj.client;
-    if (eventObj.Client) return eventObj.Client;
-    if (eventObj.origin) return eventObj.origin;
-    if (eventObj.authorizedClient) return eventObj.authorizedClient;
-    if (eventObj.AuthorizedClient) return eventObj.AuthorizedClient;
-    const clientState = eventObj.clientState || eventObj.ClientState;
-    if (clientState) {
-      if (clientState.client) return clientState.client;
-      if (clientState.Client) return clientState.Client;
-      return clientState;
-    }
-    return null;
-  }
-  function extractServerFromClient(client) {
-    if (!client) return null;
-    if (client.currentServer) return client.currentServer;
-    if (client.CurrentServer) return client.CurrentServer;
-    if (client.server) return client.server;
-    if (client.Server) return client.Server;
-    return null;
-  }
-  function extractServerFromEvent(eventObj) {
-    if (!eventObj) return null;
-    if (eventObj.server) return eventObj.server;
-    if (eventObj.Server) return eventObj.Server;
-    if (eventObj.currentServer) return eventObj.currentServer;
-    if (eventObj.CurrentServer) return eventObj.CurrentServer;
-    const client = extractClientFromEvent(eventObj);
-    return extractServerFromClient(client);
-  }
-  function extractMapNameFromObject(mapValue) {
-    if (!mapValue) return "";
-    if (typeof mapValue === "string") return cleanName(mapValue);
-    return cleanName(
-      mapValue.name || mapValue.Name || mapValue.mapName || mapValue.MapName || (typeof mapValue.toString === "function" ? mapValue.toString() : "")
-    );
-  }
-  function extractMapNameFromServer(server) {
-    if (!server) return "";
-    const currentMap = server.currentMap || server.CurrentMap || server.map || server.Map;
-    const currentMapName = extractMapNameFromObject(currentMap);
-    if (currentMapName) return currentMapName;
-    return cleanName(
-      server.mapName || server.MapName || server.currentMapName || server.CurrentMapName || ""
-    );
-  }
-  function extractMapNameFromEvent(eventObj) {
-    if (!eventObj) return "";
-    const direct = cleanName(eventObj.mapName || eventObj.MapName || eventObj.newMap || eventObj.NewMap || "");
-    if (direct) return direct;
-    const mapObj = eventObj.currentMap || eventObj.CurrentMap || eventObj.newCurrentMap || eventObj.NewCurrentMap;
-    const mapFromObject = extractMapNameFromObject(mapObj);
-    if (mapFromObject) return mapFromObject;
-    const server = extractServerFromEvent(eventObj);
-    return extractMapNameFromServer(server);
-  }
-  function extractNetworkIdFromClient(client) {
-    if (!client) return "";
-    return normalizeNetworkId(
-      client.networkId || client.NetworkId || client.networkID || client.NetworkID || client.xuid || client.Xuid || client.guid || client.Guid || null
-    );
   }
   var plugin = {
     author: "b_five",
@@ -684,7 +1403,9 @@ var _b = (() => {
       serverByKey: {},
       activeNetworkIdsByServer: {},
       populationStateByServer: {},
-      mapNameByServer: {},
+      mapInfoByServer: {},
+      modeInfoByServer: {},
+      serverProbeLoggedByServer: {},
       statusMessageIdByServer: {},
       statusSyncByServer: {},
       statusRetryAtByServer: {},
@@ -738,10 +1459,11 @@ var _b = (() => {
         this.notifierNamesText()
       );
       this.logger.logInformation(
-        "{Name}: Discord config token_set={TokenSet} channel_set={ChannelSet} map_images={MapImages}",
+        "{Name}: Discord config token_set={TokenSet} channel_set={ChannelSet} thumbnail_base_url_set={ThumbnailSet} map_images={MapImages}",
         this.name,
         this.config.discordBotToken ? "yes" : "no",
         this.config.discordChannelId ? "yes" : "no",
+        this.config.thumbnailBaseUrl ? "yes" : "no",
         Object.keys(this.config.mapImageUrls || {}).length
       );
       if (!this.dispatcher || this.dispatcher.count === 0) {
@@ -765,62 +1487,24 @@ var _b = (() => {
         this.bootstrapKnownServers();
       });
     },
-    collectServersFromManager: function() {
-      const manager = this.manager;
-      if (!manager) return [];
-      const methodNames = [
-        "getServers",
-        "GetServers",
-        "getActiveServers",
-        "GetActiveServers"
-      ];
-      const propertyNames = [
-        "servers",
-        "Servers",
-        "activeServers",
-        "ActiveServers",
-        "gameServers",
-        "GameServers"
-      ];
-      const gathered = [];
-      for (let i = 0; i < methodNames.length; i++) {
-        const methodName = methodNames[i];
-        if (typeof manager[methodName] !== "function") continue;
-        try {
-          const rows = toArray(manager[methodName]());
-          for (let j = 0; j < rows.length; j++) {
-            if (rows[j]) gathered.push(rows[j]);
-          }
-        } catch (_) {
-        }
-      }
-      for (let i = 0; i < propertyNames.length; i++) {
-        const propertyName = propertyNames[i];
-        const rows = toArray(manager[propertyName]);
-        for (let j = 0; j < rows.length; j++) {
-          if (rows[j]) gathered.push(rows[j]);
-        }
-      }
-      const unique = {};
-      const out = [];
-      for (let i = 0; i < gathered.length; i++) {
-        const server = gathered[i];
-        const key = getServerKey(server);
-        if (unique[key]) continue;
-        unique[key] = true;
-        out.push(server);
-      }
-      return out;
-    },
     bootstrapKnownServers: function() {
-      const servers = this.collectServersFromManager();
+      const servers = collectServersFromManager(this.manager);
       this.logger.logInformation(
         "{Name}: bootstrapKnownServers discovered {Count} server(s) from manager",
         this.name,
         servers.length
       );
       for (let i = 0; i < servers.length; i++) {
-        this.observeServerPopulation(servers[i], null, false, "bootstrap_manager", extractMapNameFromServer(servers[i]), true);
+        const server = servers[i];
+        this.observeServerPopulation(
+          server,
+          null,
+          false,
+          "bootstrap_manager",
+          extractMapInfoFromServer(server),
+          extractModeInfoFromServer(server),
+          true
+        );
       }
     },
     refreshStatusMessages: function() {
@@ -832,38 +1516,74 @@ var _b = (() => {
         const state = this.runtime.populationStateByServer[serverKey] || {};
         const count = parseIntSafe(state.lastCount, 0);
         const serverName = cleanName(server.serverName || server.ServerName || server.hostname || server.Hostname || serverKey);
-        const mapName = this.runtime.mapNameByServer[serverKey] || extractMapNameFromServer(server) || "unknown";
-        this.ensureStatusMessage(serverKey, serverName, count, mapName);
+        const mapInfo = mergeNamedInfo(this.runtime.mapInfoByServer[serverKey], extractMapInfoFromServer(server));
+        const modeInfo = mergeNamedInfo(this.runtime.modeInfoByServer[serverKey], extractModeInfoFromServer(server));
+        ensureStatusMessage(this, serverKey, serverName, count, mapInfo, modeInfo);
       }
     },
     onClientStateInitialized: function(eventObj) {
       const server = extractServerFromEvent(eventObj);
       const client = extractClientFromEvent(eventObj);
-      const mapName = extractMapNameFromEvent(eventObj);
-      this.observeServerPopulation(server, client, false, "client_state_initialized", mapName, false);
+      this.observeServerPopulation(
+        server,
+        client,
+        false,
+        "client_state_initialized",
+        extractMapInfoFromEvent(eventObj),
+        extractModeInfoFromEvent(eventObj),
+        false
+      );
     },
     onClientStateDisposed: function(eventObj) {
       const server = extractServerFromEvent(eventObj);
       const client = extractClientFromEvent(eventObj);
-      const mapName = extractMapNameFromEvent(eventObj);
-      this.observeServerPopulation(server, client, true, "client_state_disposed", mapName, false);
+      this.observeServerPopulation(
+        server,
+        client,
+        true,
+        "client_state_disposed",
+        extractMapInfoFromEvent(eventObj),
+        extractModeInfoFromEvent(eventObj),
+        false
+      );
     },
     onServerMonitoringStarted: function(eventObj) {
       const server = extractServerFromEvent(eventObj);
-      const mapName = extractMapNameFromEvent(eventObj);
-      this.observeServerPopulation(server, null, false, "monitoring_started", mapName, true);
+      this.observeServerPopulation(
+        server,
+        null,
+        false,
+        "monitoring_started",
+        extractMapInfoFromEvent(eventObj),
+        extractModeInfoFromEvent(eventObj),
+        true
+      );
     },
     onMatchStarted: function(eventObj) {
       const server = extractServerFromEvent(eventObj);
-      const mapName = extractMapNameFromEvent(eventObj);
-      this.observeServerPopulation(server, null, false, "match_started", mapName, false);
+      this.observeServerPopulation(
+        server,
+        null,
+        false,
+        "match_started",
+        extractMapInfoFromEvent(eventObj),
+        extractModeInfoFromEvent(eventObj),
+        false
+      );
     },
     onMatchEnded: function(eventObj) {
       const server = extractServerFromEvent(eventObj);
-      const mapName = extractMapNameFromEvent(eventObj);
-      this.observeServerPopulation(server, null, false, "match_ended", mapName, false);
+      this.observeServerPopulation(
+        server,
+        null,
+        false,
+        "match_ended",
+        extractMapInfoFromEvent(eventObj),
+        extractModeInfoFromEvent(eventObj),
+        false
+      );
     },
-    observeServerPopulation: function(server, client, isDisconnect, source, mapHint, isBootstrap) {
+    observeServerPopulation: function(server, client, isDisconnect, source, mapHint, modeHint, isBootstrap) {
       if (!server) {
         this.logger.logWarning(
           "{Name}: Population observation skipped because server was null (source={Source})",
@@ -875,9 +1595,32 @@ var _b = (() => {
       const serverKey = getServerKey(server);
       const serverName = cleanName(server.serverName || server.ServerName || server.hostname || server.Hostname || serverKey);
       this.runtime.serverByKey[serverKey] = server;
-      const mapFromServer = extractMapNameFromServer(server);
-      const mapName = cleanName(mapHint || mapFromServer || this.runtime.mapNameByServer[serverKey] || "unknown") || "unknown";
-      this.runtime.mapNameByServer[serverKey] = mapName;
+      const mapInfo = mergeNamedInfo(
+        mapHint,
+        mergeNamedInfo(extractMapInfoFromServer(server), this.runtime.mapInfoByServer[serverKey])
+      );
+      const modeInfo = mergeNamedInfo(
+        modeHint,
+        mergeNamedInfo(extractModeInfoFromServer(server), this.runtime.modeInfoByServer[serverKey])
+      );
+      this.runtime.mapInfoByServer[serverKey] = mapInfo;
+      this.runtime.modeInfoByServer[serverKey] = modeInfo;
+      if (!this.runtime.serverProbeLoggedByServer[serverKey]) {
+        this.runtime.serverProbeLoggedByServer[serverKey] = true;
+        this.logger.logInformation(
+          "{Name}: PROBE server={Server} server_keys={Keys}",
+          this.name,
+          serverKey,
+          listKeys(server, 120)
+        );
+        this.logger.logInformation(
+          "{Name}: PROBE server={Server} map_keys={MapKeys} mode_type={ModeType}",
+          this.name,
+          serverKey,
+          listKeys(server.currentMap || server.CurrentMap || server.map || server.Map, 80),
+          textFromUnknown(server.gameType || server.GameType || server.gametype || server.Gametype || "(none)")
+        );
+      }
       if (!this.runtime.activeNetworkIdsByServer[serverKey]) {
         this.runtime.activeNetworkIdsByServer[serverKey] = {};
       }
@@ -891,13 +1634,21 @@ var _b = (() => {
         }
       }
       const directCount = getPlayerCountFromServer(server);
-      let count = directCount;
+      const trackedCount = Object.keys(activeNetworkIds).length;
+      let playerCount = parseIntSafe(directCount, -1);
       let countSource = "server";
-      if (count == null) {
-        count = Object.keys(activeNetworkIds).length;
+      if (playerCount < 0) {
+        playerCount = trackedCount;
         countSource = "tracked_ids";
+      } else if (networkId) {
+        if (isDisconnect && trackedCount < playerCount) {
+          playerCount = trackedCount;
+          countSource = "tracked_ids_disconnect";
+        } else if (!isDisconnect && trackedCount > playerCount) {
+          playerCount = trackedCount;
+          countSource = "tracked_ids_connect";
+        }
       }
-      const playerCount = parseIntSafe(count, -1);
       if (playerCount < 0) {
         this.logger.logWarning(
           "{Name}: Population observation produced invalid count (source={Source}, server={Server})",
@@ -907,424 +1658,16 @@ var _b = (() => {
         );
         return;
       }
-      this.ensureStatusMessage(serverKey, serverName, playerCount, mapName);
-      this.evaluatePopulation(serverKey, serverName, playerCount, mapName, {
+      ensureStatusMessage(this, serverKey, serverName, playerCount, mapInfo, modeInfo);
+      evaluatePopulation(this, serverKey, serverName, playerCount, {
         source: String(source || "unknown"),
         countSource,
         directCount,
-        activeCount: Object.keys(activeNetworkIds).length,
+        activeCount: trackedCount,
         networkId,
         isDisconnect: isDisconnect === true,
         isBootstrap: isBootstrap === true
       });
-    },
-    statusColor: function(playerCount) {
-      const count = parseIntSafe(playerCount, 0);
-      const alerts = this.config.alerts || [];
-      let highestThreshold = 0;
-      for (let i = 0; i < alerts.length; i++) {
-        const threshold = parseIntSafe(alerts[i].threshold, 0);
-        if (count >= threshold && threshold > highestThreshold) highestThreshold = threshold;
-      }
-      if (highestThreshold >= 11) return 15158332;
-      if (highestThreshold >= 6) return 15844367;
-      if (highestThreshold >= 1) return 3066993;
-      return 3447003;
-    },
-    buildStatusPayload: function(serverKey, serverName, playerCount, mapName) {
-      const normalizedMapName = cleanName(mapName || "unknown") || "unknown";
-      const imageUrl = resolveMapImageUrl(this.config.mapImageUrls, normalizedMapName);
-      const embed = {
-        title: serverName,
-        description: "Players: **" + playerCount + "/" + MAX_PLAYERS + "**\nMap: **" + normalizedMapName + "**\nServer Key: `" + serverKey + "`",
-        color: this.statusColor(playerCount)
-      };
-      if (imageUrl) {
-        embed.image = { url: imageUrl };
-      }
-      return {
-        content: "",
-        embeds: [embed],
-        allowed_mentions: { parse: [] }
-      };
-    },
-    ensureStatusSyncState: function(serverKey) {
-      let sync = this.runtime.statusSyncByServer[serverKey];
-      if (!sync) {
-        sync = {
-          inFlight: false,
-          pending: null
-        };
-        this.runtime.statusSyncByServer[serverKey] = sync;
-      }
-      return sync;
-    },
-    dispatchStatusUpsert: function(serverKey, update) {
-      const sync = this.ensureStatusSyncState(serverKey);
-      sync.inFlight = true;
-      const existingMessageId = this.runtime.statusMessageIdByServer[serverKey] || "";
-      this.dispatcher.upsertMessage(
-        this,
-        existingMessageId,
-        update.payload,
-        { type: "status", serverKey },
-        (ok, messageId, errorText, details) => {
-          sync.inFlight = false;
-          if (!ok) {
-            const retryAfterMs = Math.max(1e3, parseIntSafe(details && details.retryAfterMs, 5e3));
-            this.runtime.statusRetryAtByServer[serverKey] = Date.now() + retryAfterMs;
-            this.logger.logWarning(
-              "{Name}: Failed to upsert status message for {Server} - {Error} (retry_ms={RetryMs})",
-              this.name,
-              serverKey,
-              String(errorText || "unknown upsert error"),
-              retryAfterMs
-            );
-            if (this.pluginHelper && typeof this.pluginHelper.requestNotifyAfterDelay === "function") {
-              this.pluginHelper.requestNotifyAfterDelay(retryAfterMs, () => {
-                this.ensureStatusMessage(serverKey, update.serverName, update.playerCount, update.mapName);
-              });
-            }
-          } else {
-            this.runtime.statusRetryAtByServer[serverKey] = 0;
-            if (messageId) {
-              this.runtime.statusMessageIdByServer[serverKey] = String(messageId);
-            }
-            this.runtime.statusFingerprintByServer[serverKey] = update.fingerprint;
-          }
-          const pending = sync.pending;
-          sync.pending = null;
-          if (pending) {
-            this.ensureStatusMessage(
-              serverKey,
-              pending.serverName,
-              pending.playerCount,
-              pending.mapName
-            );
-          }
-        }
-      );
-    },
-    ensureStatusMessage: function(serverKey, serverName, playerCount, mapName) {
-      if (!this.dispatcher || this.dispatcher.count === 0) return;
-      const existingMessageId = this.runtime.statusMessageIdByServer[serverKey] || "";
-      if (!existingMessageId && playerCount <= 0) {
-        return;
-      }
-      const payload = this.buildStatusPayload(serverKey, serverName, playerCount, mapName);
-      const fingerprint = JSON.stringify(payload);
-      const existingFingerprint = this.runtime.statusFingerprintByServer[serverKey] || "";
-      if (existingMessageId && existingFingerprint === fingerprint) {
-        return;
-      }
-      const update = {
-        serverName,
-        playerCount,
-        mapName,
-        payload,
-        fingerprint
-      };
-      const sync = this.ensureStatusSyncState(serverKey);
-      if (sync.inFlight) {
-        sync.pending = update;
-        return;
-      }
-      const nowMs = Date.now();
-      const retryAtMs = parseIntSafe(this.runtime.statusRetryAtByServer[serverKey], 0);
-      if (retryAtMs > nowMs) {
-        sync.pending = update;
-        return;
-      }
-      this.dispatchStatusUpsert(serverKey, update);
-    },
-    maybeDeleteNotifyForLowPopulation: function(serverKey, previousCount, playerCount, source) {
-      if (playerCount >= NOTIFY_CLEAR_BELOW_COUNT) return;
-      if (parseIntSafe(previousCount, playerCount) < NOTIFY_CLEAR_BELOW_COUNT) return;
-      const messageId = this.runtime.notifyMessageIdByServer[serverKey] || "";
-      if (!messageId) return;
-      if (this.runtime.notifyDeleteInFlightByServer[serverKey]) return;
-      this.runtime.notifyDeleteInFlightByServer[serverKey] = true;
-      if (!this.dispatcher || this.dispatcher.count === 0) {
-        this.runtime.notifyDeleteInFlightByServer[serverKey] = false;
-        return;
-      }
-      this.logger.logInformation(
-        "{Name}: Population dropped below {Minimum} on {Server} (count={Count}, source={Source}); deleting active notify message",
-        this.name,
-        NOTIFY_CLEAR_BELOW_COUNT,
-        serverKey,
-        playerCount,
-        String(source || "unknown")
-      );
-      this.dispatcher.deleteMessage(this, messageId, { type: "notify", serverKey }, (ok, errorText) => {
-        this.runtime.notifyDeleteInFlightByServer[serverKey] = false;
-        if (!ok) {
-          this.logger.logWarning(
-            "{Name}: Failed to delete active notify message for {Server} - {Error}",
-            this.name,
-            serverKey,
-            String(errorText || "unknown delete error")
-          );
-          return;
-        }
-        delete this.runtime.notifyMessageIdByServer[serverKey];
-      });
-    },
-    evaluatePopulation: function(serverKey, serverName, playerCount, mapName, observationMeta) {
-      const alerts = this.config.alerts || [];
-      if (alerts.length === 0) return;
-      const meta = observationMeta || {};
-      let state = this.runtime.populationStateByServer[serverKey];
-      if (!state) {
-        state = {
-          initialized: false,
-          lastCount: null,
-          firedByThreshold: {}
-        };
-      }
-      if (!state.initialized) {
-        this.logger.logInformation(
-          "{Name}: Initial population snapshot source={Source} server={Server} count={Count} via={CountSource} thresholds={Thresholds}",
-          this.name,
-          meta.source || "unknown",
-          serverKey,
-          playerCount,
-          meta.countSource || "unknown",
-          thresholdListText(alerts)
-        );
-        this.applyStartupRules(serverKey, serverName, playerCount, mapName, state);
-        state.initialized = true;
-        state.lastCount = playerCount;
-        this.runtime.populationStateByServer[serverKey] = state;
-        return;
-      }
-      const previousCount = parseIntSafe(state.lastCount, playerCount);
-      this.maybeDeleteNotifyForLowPopulation(serverKey, previousCount, playerCount, meta.source || "unknown");
-      if (previousCount !== playerCount) {
-        this.logger.logInformation(
-          "{Name}: Population changed source={Source} server={Server} previous={Previous} current={Current} via={CountSource} tracked_ids={TrackedIds}",
-          this.name,
-          meta.source || "unknown",
-          serverKey,
-          previousCount,
-          playerCount,
-          meta.countSource || "unknown",
-          parseIntSafe(meta.activeCount, 0)
-        );
-      }
-      for (let i = 0; i < alerts.length; i++) {
-        const alert = alerts[i];
-        const threshold = parseIntSafe(alert.threshold, 0);
-        const thresholdKey = String(threshold);
-        if (playerCount < threshold) {
-          if (state.firedByThreshold[thresholdKey]) {
-            this.logger.logInformation(
-              "{Name}: Threshold reset server={Server} threshold={Threshold} count={Count}",
-              this.name,
-              serverKey,
-              threshold,
-              playerCount
-            );
-          }
-          state.firedByThreshold[thresholdKey] = false;
-        }
-        const crossedUp = previousCount < threshold && playerCount >= threshold;
-        if (crossedUp && !state.firedByThreshold[thresholdKey]) {
-          this.logger.logInformation(
-            "{Name}: Threshold crossed upward server={Server} threshold={Threshold} previous={Previous} current={Current}",
-            this.name,
-            serverKey,
-            threshold,
-            previousCount,
-            playerCount
-          );
-          this.handleThresholdCrossing(alert, serverKey, serverName, playerCount, mapName, false, meta.source || "threshold_cross");
-          state.firedByThreshold[thresholdKey] = true;
-        }
-      }
-      state.lastCount = playerCount;
-      this.runtime.populationStateByServer[serverKey] = state;
-    },
-    applyStartupRules: function(serverKey, serverName, playerCount, mapName, state) {
-      const alerts = this.config.alerts || [];
-      let highestMet = null;
-      for (let i = 0; i < alerts.length; i++) {
-        const alert = alerts[i];
-        const threshold2 = parseIntSafe(alert.threshold, 0);
-        const thresholdKey = String(threshold2);
-        if (playerCount >= threshold2) {
-          highestMet = alert;
-          state.firedByThreshold[thresholdKey] = true;
-        } else {
-          state.firedByThreshold[thresholdKey] = false;
-        }
-      }
-      if (!highestMet) {
-        this.logger.logInformation(
-          "{Name}: Startup snapshot below all thresholds for {Server} (count={Count})",
-          this.name,
-          serverKey,
-          playerCount
-        );
-        return;
-      }
-      if (playerCount >= MAX_PLAYERS) {
-        this.logger.logInformation(
-          "{Name}: Startup snapshot at full capacity for {Server} (count={Count}); startup alert skipped",
-          this.name,
-          serverKey,
-          playerCount
-        );
-        return;
-      }
-      const threshold = parseIntSafe(highestMet.threshold, 0);
-      this.logger.logInformation(
-        "{Name}: Startup snapshot met threshold {Threshold} for {Server} (count={Count}); sending highest-threshold startup alert",
-        this.name,
-        threshold,
-        serverKey,
-        playerCount
-      );
-      this.handleThresholdCrossing(highestMet, serverKey, serverName, playerCount, mapName, true, "startup_snapshot");
-    },
-    canSendGlobalNotify: function() {
-      const nowMs = Date.now();
-      const lastAtMs = parseIntSafe(this.runtime.globalNotifyLastAtMs, 0);
-      if (lastAtMs <= 0) {
-        return {
-          allowed: true,
-          remainingMs: 0
-        };
-      }
-      const elapsedMs = nowMs - lastAtMs;
-      const remainingMs = GLOBAL_NOTIFY_COOLDOWN_MS - elapsedMs;
-      if (remainingMs <= 0) {
-        return {
-          allowed: true,
-          remainingMs: 0
-        };
-      }
-      return {
-        allowed: false,
-        remainingMs
-      };
-    },
-    setGlobalNotifyNow: function() {
-      this.runtime.globalNotifyLastAtMs = Date.now();
-    },
-    buildNotifyPayload: function(alert, serverKey, serverName, playerCount, mapName, isStartup) {
-      const threshold = parseIntSafe(alert.threshold, 0);
-      const context = buildMessageContext(serverName, serverKey, playerCount, threshold);
-      const renderedBody = formatPopulationMessage(alert.message, context);
-      let content = NOTIFY_MENTION_PREFIX + " " + renderedBody;
-      content += "\nServer: **" + serverName + "** (`" + serverKey + "`)";
-      content += "\nPopulation: **" + playerCount + "/" + MAX_PLAYERS + "**";
-      content += "\nMap: **" + (mapName || "unknown") + "**";
-      if (isStartup) {
-        content += "\n(Startup snapshot)";
-      }
-      const payload = {
-        content,
-        allowed_mentions: {
-          parse: ["everyone"]
-        }
-      };
-      const imageUrl = resolveMapImageUrl(this.config.mapImageUrls, mapName || "");
-      if (imageUrl) {
-        payload.embeds = [
-          {
-            title: serverName,
-            description: "Threshold reached: **" + threshold + "**",
-            image: { url: imageUrl },
-            color: 15158332
-          }
-        ];
-      }
-      return payload;
-    },
-    handleThresholdCrossing: function(alert, serverKey, serverName, playerCount, mapName, isStartup, source) {
-      if (!this.dispatcher || this.dispatcher.count === 0) {
-        if (!this.runtime.missingNotifierWarned) {
-          this.logger.logWarning("{Name}: Alert suppressed because no notifier destination is configured.", this.name);
-          this.runtime.missingNotifierWarned = true;
-        }
-        return;
-      }
-      if (this.runtime.globalNotifyDispatchInFlight) {
-        this.logger.logInformation(
-          "{Name}: Notify suppressed because another notify dispatch is currently in-flight server={Server} threshold={Threshold} source={Source}",
-          this.name,
-          serverKey,
-          parseIntSafe(alert.threshold, 0),
-          String(source || "unknown")
-        );
-        return;
-      }
-      const cooldown = this.canSendGlobalNotify();
-      if (!cooldown.allowed) {
-        const remainingMinutes = Math.ceil(cooldown.remainingMs / 6e4);
-        this.logger.logInformation(
-          "{Name}: Notify suppressed by global cooldown server={Server} threshold={Threshold} remaining_minutes={Remaining} source={Source}",
-          this.name,
-          serverKey,
-          parseIntSafe(alert.threshold, 0),
-          remainingMinutes,
-          String(source || "unknown")
-        );
-        return;
-      }
-      this.runtime.globalNotifyDispatchInFlight = true;
-      this.setGlobalNotifyNow();
-      this.sendNotifyMessage(alert, serverKey, serverName, playerCount, mapName, isStartup, source, () => {
-        this.runtime.globalNotifyDispatchInFlight = false;
-      });
-    },
-    sendNotifyMessage: function(alert, serverKey, serverName, playerCount, mapName, isStartup, source, done) {
-      const payload = this.buildNotifyPayload(alert, serverKey, serverName, playerCount, mapName, isStartup);
-      const existingMessageId = this.runtime.notifyMessageIdByServer[serverKey] || "";
-      this.logger.logInformation(
-        "{Name}: Dispatching notify message server={Server} threshold={Threshold} startup={Startup} source={Source} existing_message_id={ExistingId}",
-        this.name,
-        serverKey,
-        parseIntSafe(alert.threshold, 0),
-        isStartup === true ? "yes" : "no",
-        String(source || "unknown"),
-        existingMessageId || "(none)"
-      );
-      this.dispatcher.upsertMessage(
-        this,
-        existingMessageId,
-        payload,
-        { type: "notify", serverKey },
-        (ok, messageId, errorText) => {
-          if (!ok) {
-            this.logger.logWarning(
-              "{Name}: Failed to dispatch notify message for {Server} - {Error}",
-              this.name,
-              serverKey,
-              String(errorText || "unknown notify error")
-            );
-            if (typeof done === "function") done(false);
-            return;
-          }
-          if (messageId) {
-            this.runtime.notifyMessageIdByServer[serverKey] = String(messageId);
-          }
-          this.logger.logInformation(
-            "{Name}: Notify message sent server={Server} threshold={Threshold} cooldown_minutes={CooldownMinutes}",
-            this.name,
-            serverKey,
-            parseIntSafe(alert.threshold, 0),
-            GLOBAL_NOTIFY_COOLDOWN_MS / 6e4
-          );
-          if (typeof done === "function") done(true);
-        }
-      );
-    },
-    remainingCooldownMinutes: function() {
-      const cooldown = this.canSendGlobalNotify();
-      if (cooldown.allowed) return 0;
-      return Math.ceil(cooldown.remainingMs / 6e4);
     },
     tellStatus: function(commandEvent) {
       if (!commandEvent || !commandEvent.origin || typeof commandEvent.origin.tell !== "function") return;
@@ -1337,7 +1680,7 @@ var _b = (() => {
         const hasNotify = this.runtime.notifyMessageIdByServer[serverKey] ? "notify:on" : "notify:off";
         serverSummaries.push(serverKey + "=" + count + "(" + hasNotify + ")");
       }
-      const cooldownMinutes = this.remainingCooldownMinutes();
+      const cooldownMinutes = remainingCooldownMinutes(this);
       const cooldownText = cooldownMinutes > 0 ? cooldownMinutes + "m" : "ready";
       commandEvent.origin.tell(
         "Population Notifier v" + this.version + " | alerts=" + thresholdListText(this.config.alerts) + " | notifiers=" + this.notifierNamesText() + " | discord=" + (this.config.discordBotToken && this.config.discordChannelId ? "configured" : "missing") + " | cooldown=" + cooldownText + " | status_msgs=" + Object.keys(this.runtime.statusMessageIdByServer || {}).length + " | notify_msgs=" + Object.keys(this.runtime.notifyMessageIdByServer || {}).length + " | servers=" + (serverSummaries.length > 0 ? serverSummaries.join(", ") : "(none)")
