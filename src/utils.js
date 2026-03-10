@@ -101,3 +101,10 @@ export function renderTemplate(template, values) {
     return '';
   });
 }
+
+export function snippet(value, maxLength) {
+  const limit = parseIntSafe(maxLength, 220);
+  const text = String(value == null ? '' : value);
+  if (text.length <= limit) return text;
+  return text.substring(0, limit);
+}

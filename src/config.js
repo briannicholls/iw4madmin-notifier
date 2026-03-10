@@ -1,6 +1,9 @@
-import { parseIntSafe, renderTemplate } from './utils.js';
+import { cleanName, parseIntSafe, renderTemplate } from './utils.js';
 
 export const MAX_PLAYERS = 18;
+export const GLOBAL_NOTIFY_COOLDOWN_MS = 60 * 60 * 1000;
+export const NOTIFY_CLEAR_BELOW_COUNT = 3;
+export const NOTIFY_MENTION_PREFIX = '@here';
 
 const DEFAULT_ALERTS = [
   {
@@ -20,7 +23,8 @@ const DEFAULT_ALERTS = [
 export const defaultConfig = {
   alerts: DEFAULT_ALERTS.map(copyAlert),
   discordBotToken: '',
-  discordChannelId: ''
+  discordChannelId: '',
+  mapImageUrls: {}
 };
 
 function copyAlert(alert) {
@@ -68,12 +72,38 @@ function sanitizeAlerts(inputAlerts) {
   return sanitized;
 }
 
+export function normalizeMapKey(value) {
+  return cleanName(value).toLowerCase();
+}
+
+function sanitizeMapImageUrls(rawValue) {
+  if (!rawValue || typeof rawValue !== 'object') return {};
+
+  const source = rawValue;
+  const out = {};
+  const keys = Object.keys(source);
+
+  for (let i = 0; i < keys.length; i++) {
+    const rawKey = keys[i];
+    const normalizedKey = normalizeMapKey(rawKey);
+    if (!normalizedKey) continue;
+
+    const url = String(source[rawKey] == null ? '' : source[rawKey]).trim();
+    if (!url) continue;
+
+    out[normalizedKey] = url;
+  }
+
+  return out;
+}
+
 export function sanitizeConfig(rawConfig) {
   const source = rawConfig || {};
   return {
     alerts: sanitizeAlerts(source.alerts),
     discordBotToken: String(source.discordBotToken == null ? '' : source.discordBotToken).trim(),
-    discordChannelId: String(source.discordChannelId == null ? '' : source.discordChannelId).trim()
+    discordChannelId: String(source.discordChannelId == null ? '' : source.discordChannelId).trim(),
+    mapImageUrls: sanitizeMapImageUrls(source.mapImageUrls)
   };
 }
 
@@ -107,4 +137,14 @@ export function buildMessageContext(serverName, serverKey, playerCount, threshol
     threshold: threshold,
     fillPercent: fillPercent
   };
+}
+
+export function resolveMapImageUrl(mapImageUrls, mapName) {
+  const key = normalizeMapKey(mapName);
+  if (!key) return '';
+
+  const source = mapImageUrls || {};
+  const value = source[key];
+  if (!value) return '';
+  return String(value);
 }

@@ -1,3 +1,5 @@
+import { snippet } from '../utils.js';
+
 function responseToText(response) {
   if (response == null) return '';
   if (typeof response === 'string') return response;
@@ -19,6 +21,107 @@ function responseToText(response) {
   }
 }
 
+function parseStatusCode(response) {
+  const raw = response
+    ? (response.statusCode || response.status || response.StatusCode || response.httpStatus)
+    : null;
+  const parsed = parseInt(String(raw == null ? '' : raw), 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseDiscordCode(parsed) {
+  const raw = parsed && parsed.code != null ? parsed.code : null;
+  const parsedCode = parseInt(String(raw == null ? '' : raw), 10);
+  return Number.isFinite(parsedCode) ? parsedCode : 0;
+}
+
+function parseRetryAfterMs(parsed) {
+  const raw = parsed
+    ? (parsed.retry_after != null ? parsed.retry_after : parsed.retryAfter)
+    : null;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  if (value >= 1000) return Math.round(value);
+  return Math.round(value * 1000);
+}
+
+function isMissingMessageResponse(statusCode, parsed) {
+  if (statusCode === 404) return true;
+  return parseDiscordCode(parsed) === 10008;
+}
+
+function isRateLimitedResponse(statusCode, parsed) {
+  if (statusCode === 429) return true;
+  if (parsed && typeof parsed.message === 'string') {
+    return /rate\s*limited/i.test(parsed.message);
+  }
+  return false;
+}
+
+function tryParseJson(text) {
+  const body = String(text == null ? '' : text).trim();
+  if (!body) return null;
+  try {
+    return JSON.parse(body);
+  } catch (_) {
+    return null;
+  }
+}
+
+function extractMessageId(parsed, text) {
+  if (parsed && parsed.id) return String(parsed.id);
+
+  const match = /"id"\s*:\s*"(\d+)"/.exec(String(text || ''));
+  if (match && match[1]) return String(match[1]);
+
+  return '';
+}
+
+function isLikelySuccess(response, statusCode, parsed, text, method) {
+  if (response && response.success === false) return false;
+
+  if (Number.isFinite(statusCode)) {
+    return statusCode >= 200 && statusCode < 300;
+  }
+
+  if (parsed && (parsed.error || parsed.errors || parsed.code)) {
+    return false;
+  }
+
+  if (method === 'DELETE') {
+    return String(text || '').trim() === '';
+  }
+
+  const id = extractMessageId(parsed, text);
+  if (id) return true;
+
+  if (!text || String(text).trim() === '') return true;
+  return false;
+}
+
+function buildErrorText(statusCode, parsed, text) {
+  if (parsed && typeof parsed.message === 'string' && parsed.message) {
+    return parsed.message;
+  }
+  if (parsed && typeof parsed.error === 'string' && parsed.error) {
+    return parsed.error;
+  }
+  if (parsed && Array.isArray(parsed.errors) && parsed.errors.length > 0) {
+    return typeof parsed.errors[0] === 'string' ? parsed.errors[0] : snippet(JSON.stringify(parsed.errors[0]), 220);
+  }
+
+  const textSnippet = snippet(text, 220);
+  if (textSnippet) {
+    if (Number.isFinite(statusCode)) {
+      return 'status=' + statusCode + ' body=' + textSnippet;
+    }
+    return textSnippet;
+  }
+
+  if (Number.isFinite(statusCode)) return 'status=' + statusCode;
+  return 'unknown discord response';
+}
+
 function createHeaders(botToken) {
   const stringDict = System.Collections.Generic.Dictionary(System.String, System.String);
   const headers = new stringDict();
@@ -34,6 +137,7 @@ function requestJson(plugin, url, method, bodyObject, headers, done) {
   try {
     const pluginScript = importNamespace('IW4MAdmin.Application.Plugin.Script');
     const body = bodyObject ? JSON.stringify(bodyObject) : '';
+
     const request = new pluginScript.ScriptPluginWebRequest(
       url,
       body,
@@ -44,30 +148,39 @@ function requestJson(plugin, url, method, bodyObject, headers, done) {
 
     plugin.pluginHelper.requestUrl(request, function (response) {
       const text = responseToText(response);
-      if (!text || String(text).trim() === '') {
-        done(true, '', response);
-        return;
-      }
+      const parsed = tryParseJson(text);
+      const statusCode = parseStatusCode(response);
+      const messageId = extractMessageId(parsed, text);
+      const ok = isLikelySuccess(response, statusCode, parsed, text, method);
+      const errorText = ok ? '' : buildErrorText(statusCode, parsed, text);
+      const retryAfterMs = parseRetryAfterMs(parsed);
+      const isRateLimited = isRateLimitedResponse(statusCode, parsed);
+      const isMissingMessage = isMissingMessageResponse(statusCode, parsed);
 
-      let parsed = null;
-      try {
-        parsed = JSON.parse(text);
-      } catch (_jsonErr) { }
-
-      if (parsed && parsed.id) {
-        done(true, '', response);
-        return;
-      }
-
-      if (String(text).indexOf('"id"') !== -1) {
-        done(true, '', response);
-        return;
-      }
-
-      done(false, text, response);
+      done({
+        ok: ok,
+        statusCode: statusCode,
+        parsed: parsed,
+        text: text,
+        messageId: messageId,
+        errorText: errorText,
+        retryAfterMs: retryAfterMs,
+        isRateLimited: isRateLimited,
+        isMissingMessage: isMissingMessage
+      });
     });
   } catch (error) {
-    done(false, error && error.message ? error.message : 'discord request setup failed', null);
+    done({
+      ok: false,
+      statusCode: null,
+      parsed: null,
+      text: '',
+      messageId: '',
+      errorText: error && error.message ? error.message : 'discord request setup failed',
+      retryAfterMs: 0,
+      isRateLimited: false,
+      isMissingMessage: false
+    });
   }
 }
 
@@ -77,30 +190,174 @@ export function createDiscordNotifier(config) {
 
   if (!botToken || !channelId) return null;
 
-  const url = 'https://discord.com/api/v10/channels/' + channelId + '/messages';
+  const headers = createHeaders(botToken);
+  const createUrl = 'https://discord.com/api/v10/channels/' + channelId + '/messages';
+
+  function createMessage(plugin, payload, meta, done) {
+    requestJson(plugin, createUrl, 'POST', payload, headers, function (result) {
+      if (!result.ok) {
+        done(false, '', result.errorText, {
+          statusCode: result.statusCode,
+          retryAfterMs: result.retryAfterMs,
+          isRateLimited: result.isRateLimited,
+          isMissingMessage: result.isMissingMessage
+        });
+        return;
+      }
+
+      done(true, result.messageId, '', {
+        statusCode: result.statusCode,
+        retryAfterMs: 0,
+        isRateLimited: false,
+        isMissingMessage: false
+      });
+    });
+  }
+
+  function updateMessage(plugin, messageId, payload, meta, done) {
+    const url = createUrl + '/' + messageId;
+    requestJson(plugin, url, 'PATCH', payload, headers, function (result) {
+      if (!result.ok) {
+        done(false, '', result.errorText, {
+          statusCode: result.statusCode,
+          retryAfterMs: result.retryAfterMs,
+          isRateLimited: result.isRateLimited,
+          isMissingMessage: result.isMissingMessage
+        });
+        return;
+      }
+
+      done(true, result.messageId || String(messageId), '', {
+        statusCode: result.statusCode,
+        retryAfterMs: 0,
+        isRateLimited: false,
+        isMissingMessage: false
+      });
+    });
+  }
 
   return {
     name: 'discord',
-    send: function (plugin, messageText) {
-      const headers = createHeaders(botToken);
-      plugin.logger.logInformation('{Name}: Discord send attempt channel={ChannelId} message_length={Length}',
-        plugin.name,
-        channelId,
-        String(messageText || '').length);
 
-      requestJson(plugin, url, 'POST', { content: String(messageText || '') }, headers, function (ok, errorText, response) {
-        if (!ok) {
-          plugin.logger.logWarning('{Name}: Discord notification failed - {Error}',
+    upsertMessage: function (plugin, existingMessageId, payload, meta, done) {
+      const type = meta && meta.type ? String(meta.type) : 'message';
+      const serverKey = meta && meta.serverKey ? String(meta.serverKey) : '(unknown)';
+
+      if (existingMessageId) {
+        updateMessage(plugin, existingMessageId, payload, meta, function (ok, messageId, errorText, details) {
+          if (ok) {
+            plugin.logger.logInformation('{Name}: Discord {Type} message updated server={Server} message_id={MessageId} status={Status}',
+              plugin.name,
+              type,
+              serverKey,
+              messageId,
+              details && details.statusCode != null ? String(details.statusCode) : '(unknown)');
+            done(true, messageId, '', details || null);
+            return;
+          }
+
+          const isMissingMessage = !!(details && details.isMissingMessage);
+          if (!isMissingMessage) {
+            plugin.logger.logWarning('{Name}: Discord {Type} update failed server={Server} message_id={MessageId} error={Error}',
+              plugin.name,
+              type,
+              serverKey,
+              String(existingMessageId),
+              errorText || 'unknown error');
+            done(false, '', errorText || 'discord update failed', details || null);
+            return;
+          }
+
+          plugin.logger.logWarning('{Name}: Discord {Type} update target missing server={Server} message_id={MessageId}; creating replacement',
             plugin.name,
-            String(errorText || 'unknown discord error'));
+            type,
+            serverKey,
+            String(existingMessageId));
+
+          createMessage(plugin, payload, meta, function (createOk, createMessageId, createErrorText, createDetails) {
+            if (!createOk) {
+              done(false, '', createErrorText || 'discord create failed after update fallback', createDetails || null);
+              return;
+            }
+
+            plugin.logger.logInformation('{Name}: Discord {Type} message created server={Server} message_id={MessageId} status={Status}',
+              plugin.name,
+              type,
+              serverKey,
+              createMessageId || '(unknown)',
+              createDetails && createDetails.statusCode != null ? String(createDetails.statusCode) : '(unknown)');
+            done(true, createMessageId, '', createDetails || null);
+          });
+        });
+        return;
+      }
+
+      createMessage(plugin, payload, meta, function (ok, messageId, errorText, details) {
+        if (!ok) {
+          done(false, '', errorText || 'discord create failed', details || null);
           return;
         }
 
-        const statusCode = response && (response.statusCode || response.status || response.StatusCode);
-        plugin.logger.logInformation('{Name}: Discord notification accepted channel={ChannelId} status={Status}',
+        plugin.logger.logInformation('{Name}: Discord {Type} message created server={Server} message_id={MessageId} status={Status}',
           plugin.name,
-          channelId,
-          statusCode == null ? '(unknown)' : String(statusCode));
+          type,
+          serverKey,
+          messageId || '(unknown)',
+          details && details.statusCode != null ? String(details.statusCode) : '(unknown)');
+
+        done(true, messageId, '', details || null);
+      });
+    },
+
+    deleteMessage: function (plugin, messageId, meta, done) {
+      if (!messageId) {
+        done(true, '');
+        return;
+      }
+
+      const type = meta && meta.type ? String(meta.type) : 'message';
+      const serverKey = meta && meta.serverKey ? String(meta.serverKey) : '(unknown)';
+      const url = createUrl + '/' + String(messageId);
+
+      requestJson(plugin, url, 'DELETE', null, headers, function (result) {
+        if (!result.ok) {
+          if (result.isMissingMessage) {
+            plugin.logger.logInformation('{Name}: Discord {Type} message already missing server={Server} message_id={MessageId}; treating delete as success',
+              plugin.name,
+              type,
+              serverKey,
+              String(messageId));
+            done(true, '', {
+              statusCode: result.statusCode,
+              retryAfterMs: 0,
+              isRateLimited: false,
+              isMissingMessage: true
+            });
+            return;
+          }
+
+          done(false, result.errorText || 'discord delete failed', {
+            statusCode: result.statusCode,
+            retryAfterMs: result.retryAfterMs,
+            isRateLimited: result.isRateLimited,
+            isMissingMessage: result.isMissingMessage
+          });
+          return;
+        }
+
+        plugin.logger.logInformation('{Name}: Discord {Type} message deleted server={Server} message_id={MessageId} status={Status}',
+          plugin.name,
+          type,
+          serverKey,
+          String(messageId),
+          result.statusCode == null ? '(unknown)' : String(result.statusCode));
+
+        done(true, '', {
+          statusCode: result.statusCode,
+          retryAfterMs: 0,
+          isRateLimited: false,
+          isMissingMessage: false
+        });
       });
     }
   };
