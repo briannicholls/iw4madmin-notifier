@@ -1,6 +1,6 @@
 import { MAX_PLAYERS, resolveMapImageUrl } from './config.js';
 import { parseIntSafe } from './utils.js';
-import { formatNamedInfoForStatus, pickCleanString } from './server-metadata.js';
+import { pickCleanString } from './server-metadata.js';
 import { resolveT6ThumbnailUrl } from './t6-thumbnails.js';
 
 function statusColor(plugin, playerCount) {
@@ -22,12 +22,13 @@ function statusColor(plugin, playerCount) {
 export function buildStatusPayload(plugin, serverName, playerCount, mapInfo, modeInfo) {
   const mapReadable = pickCleanString([mapInfo && mapInfo.readable]);
   const mapSlug = pickCleanString([mapInfo && mapInfo.slug]);
+  const modeReadable = pickCleanString([modeInfo && modeInfo.readable]);
 
   const mapText = mapReadable || 'unknown';
-  const modeText = formatNamedInfoForStatus(modeInfo, 'unknown');
+  const modeText = modeReadable || 'unknown';
   const imageLookupName = mapSlug || mapReadable;
   const imageUrl = resolveMapImageUrl(plugin.config && plugin.config.mapImageUrls, imageLookupName)
-    || resolveT6ThumbnailUrl(plugin.config && plugin.config.thumbnailBaseUrl, mapSlug);
+    || resolveT6ThumbnailUrl(plugin.config && plugin.config.thumbnailBaseUrl, mapSlug, mapReadable);
 
   const embed = {
     title: serverName,

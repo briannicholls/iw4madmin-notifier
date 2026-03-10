@@ -124,6 +124,8 @@ var _b = (() => {
   var GLOBAL_NOTIFY_COOLDOWN_MS = 60 * 60 * 1e3;
   var NOTIFY_CLEAR_BELOW_COUNT = 3;
   var NOTIFY_MENTION_PREFIX = "@here";
+  var DEFAULT_THUMBNAIL_BASE_URL = "https://iw4m.s3.us-east-2.amazonaws.com";
+  var LEGACY_DEFAULT_THUMBNAIL_BASE_URL = "https://iw4m.s3.amazonaws.com/t6_map_thumbnails_16x9";
   var DEFAULT_ALERTS = [
     {
       threshold: 1,
@@ -147,7 +149,7 @@ var _b = (() => {
     alerts: DEFAULT_ALERTS.map(copyAlert),
     discordBotToken: "",
     discordChannelId: "",
-    thumbnailBaseUrl: "",
+    thumbnailBaseUrl: DEFAULT_THUMBNAIL_BASE_URL,
     mapImageUrls: {}
   };
   function copyAlert(alert) {
@@ -215,11 +217,13 @@ var _b = (() => {
   }
   function sanitizeConfig(rawConfig) {
     const source = rawConfig || {};
+    const configuredThumbnailBaseUrlRaw = String(source.thumbnailBaseUrl == null ? "" : source.thumbnailBaseUrl).trim();
+    const configuredThumbnailBaseUrl = configuredThumbnailBaseUrlRaw === LEGACY_DEFAULT_THUMBNAIL_BASE_URL ? DEFAULT_THUMBNAIL_BASE_URL : configuredThumbnailBaseUrlRaw;
     return {
       alerts: sanitizeAlerts(source.alerts),
       discordBotToken: String(source.discordBotToken == null ? "" : source.discordBotToken).trim(),
       discordChannelId: String(source.discordChannelId == null ? "" : source.discordChannelId).trim(),
-      thumbnailBaseUrl: String(source.thumbnailBaseUrl == null ? "" : source.thumbnailBaseUrl).trim(),
+      thumbnailBaseUrl: configuredThumbnailBaseUrl || DEFAULT_THUMBNAIL_BASE_URL,
       mapImageUrls: sanitizeMapImageUrls(source.mapImageUrls)
     };
   }
@@ -487,16 +491,6 @@ var _b = (() => {
     };
     const fromServer = extractModeInfoFromServer(extractServerFromEvent(eventObj));
     return mergeNamedInfo(direct, fromServer);
-  }
-  function formatNamedInfoForStatus(info, unknownValue) {
-    const readable = pickCleanString([info && info.readable]);
-    const slug = pickCleanString([info && info.slug]);
-    if (readable && slug && readable.toLowerCase() !== slug.toLowerCase()) {
-      return readable + " (`" + slug + "`)";
-    }
-    if (readable) return readable;
-    if (slug) return "`" + slug + "`";
-    return unknownValue || "unknown";
   }
 
   // src/server-discovery.js
@@ -961,12 +955,80 @@ var _b = (() => {
     if (!raw) return "";
     return raw.replace(/\/+$/, "");
   }
-  function resolveT6ThumbnailUrl(baseUrl, mapSlug) {
+  function normalizeCandidate(value) {
+    let key = normalizeMapKey(value);
+    if (!key) return "";
+    key = key.replace(/^loadscreen_/, "");
+    key = key.replace(/\.(jpg|jpeg|png|webp)$/i, "");
+    key = key.replace(/[\s-]+/g, "_");
+    key = key.replace(/_+/g, "_").replace(/^_+|_+$/g, "");
+    return key;
+  }
+  function addUnique(list, value) {
+    if (!value) return;
+    if (list.indexOf(value) === -1) list.push(value);
+  }
+  var ALIAS_INDEX = (() => {
+    const index = {};
+    function add(alias, key) {
+      if (!alias) return;
+      if (!index[alias]) index[alias] = [];
+      if (index[alias].indexOf(key) === -1) index[alias].push(key);
+    }
+    const keys = Object.keys(T6_THUMBNAIL_FILES);
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      add(key, key);
+      if (key.indexOf("mp_") === 0) add(key.substring(3), key);
+      if (key.indexOf("zm_") === 0) add(key.substring(3), key);
+      if (key.indexOf("transit_") === 0) add(key.substring(8), key);
+      if (key.indexOf("buried_") === 0) add(key.substring(7), key);
+      if (key.indexOf("zombie_") === 0) add(key.substring(7), key);
+      add(key.replace(/_2020$/, ""), key);
+    }
+    return index;
+  })();
+  function resolveFileName(mapSlug, mapReadable) {
+    const candidates = [];
+    addUnique(candidates, normalizeCandidate(mapSlug));
+    addUnique(candidates, normalizeCandidate(mapReadable));
+    for (let i = 0; i < candidates.length; i++) {
+      const candidate = candidates[i];
+      const direct = T6_THUMBNAIL_FILES[candidate];
+      if (direct) return direct;
+    }
+    const prefixed = [];
+    for (let i = 0; i < candidates.length; i++) {
+      const candidate = candidates[i];
+      addUnique(prefixed, candidate);
+      if (candidate === "nuketown") {
+        addUnique(prefixed, "mp_nuketown_2020");
+        addUnique(prefixed, "zm_nuketown");
+        continue;
+      }
+      if (candidate && candidate.indexOf("mp_") !== 0) addUnique(prefixed, "mp_" + candidate);
+      if (candidate && candidate.indexOf("zm_") !== 0) addUnique(prefixed, "zm_" + candidate);
+    }
+    for (let i = 0; i < prefixed.length; i++) {
+      const candidate = prefixed[i];
+      const direct = T6_THUMBNAIL_FILES[candidate];
+      if (direct) return direct;
+    }
+    for (let i = 0; i < prefixed.length; i++) {
+      const candidate = prefixed[i];
+      const aliasHits = ALIAS_INDEX[candidate];
+      if (aliasHits && aliasHits.length === 1) {
+        const key = aliasHits[0];
+        const fileName = T6_THUMBNAIL_FILES[key];
+        if (fileName) return fileName;
+      }
+    }
+    return "";
+  }
+  function resolveT6ThumbnailUrl(baseUrl, mapSlug, mapReadable) {
     const base = normalizeBaseUrl(baseUrl);
     if (!base) return "";
-    const slug = normalizeMapKey(mapSlug);
-    if (!slug) return "";
-    const fileName = T6_THUMBNAIL_FILES[slug];
+    const fileName = resolveFileName(mapSlug, mapReadable);
     if (!fileName) return "";
     return base + "/" + fileName;
   }
@@ -988,10 +1050,11 @@ var _b = (() => {
   function buildStatusPayload(plugin2, serverName, playerCount, mapInfo, modeInfo) {
     const mapReadable = pickCleanString([mapInfo && mapInfo.readable]);
     const mapSlug = pickCleanString([mapInfo && mapInfo.slug]);
+    const modeReadable = pickCleanString([modeInfo && modeInfo.readable]);
     const mapText = mapReadable || "unknown";
-    const modeText = formatNamedInfoForStatus(modeInfo, "unknown");
+    const modeText = modeReadable || "unknown";
     const imageLookupName = mapSlug || mapReadable;
-    const imageUrl = resolveMapImageUrl(plugin2.config && plugin2.config.mapImageUrls, imageLookupName) || resolveT6ThumbnailUrl(plugin2.config && plugin2.config.thumbnailBaseUrl, mapSlug);
+    const imageUrl = resolveMapImageUrl(plugin2.config && plugin2.config.mapImageUrls, imageLookupName) || resolveT6ThumbnailUrl(plugin2.config && plugin2.config.thumbnailBaseUrl, mapSlug, mapReadable);
     const embed = {
       title: serverName,
       description: "Players: **" + playerCount + "/" + MAX_PLAYERS + "**\nMap: " + mapText + "\nMode: " + modeText,
@@ -1459,11 +1522,11 @@ var _b = (() => {
         this.notifierNamesText()
       );
       this.logger.logInformation(
-        "{Name}: Discord config token_set={TokenSet} channel_set={ChannelSet} thumbnail_base_url_set={ThumbnailSet} map_images={MapImages}",
+        "{Name}: Discord config token_set={TokenSet} channel_set={ChannelSet} thumbnail_base_url={ThumbnailBaseUrl} map_images={MapImages}",
         this.name,
         this.config.discordBotToken ? "yes" : "no",
         this.config.discordChannelId ? "yes" : "no",
-        this.config.thumbnailBaseUrl ? "yes" : "no",
+        this.config.thumbnailBaseUrl,
         Object.keys(this.config.mapImageUrls || {}).length
       );
       if (!this.dispatcher || this.dispatcher.count === 0) {

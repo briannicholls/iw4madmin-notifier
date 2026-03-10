@@ -107,11 +107,11 @@ const plugin = {
       MAX_PLAYERS,
       this.notifierNamesText());
 
-    this.logger.logInformation('{Name}: Discord config token_set={TokenSet} channel_set={ChannelSet} thumbnail_base_url_set={ThumbnailSet} map_images={MapImages}',
+    this.logger.logInformation('{Name}: Discord config token_set={TokenSet} channel_set={ChannelSet} thumbnail_base_url={ThumbnailBaseUrl} map_images={MapImages}',
       this.name,
       this.config.discordBotToken ? 'yes' : 'no',
       this.config.discordChannelId ? 'yes' : 'no',
-      this.config.thumbnailBaseUrl ? 'yes' : 'no',
+      this.config.thumbnailBaseUrl,
       Object.keys(this.config.mapImageUrls || {}).length);
 
     if (!this.dispatcher || this.dispatcher.count === 0) {
