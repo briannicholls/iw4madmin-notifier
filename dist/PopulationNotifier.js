@@ -1004,6 +1004,7 @@ var _b = (() => {
   }
 
   // src/status-channel.js
+  var MAX_DASHBOARD_EMBEDS = 10;
   function statusColor(plugin2, playerCount) {
     const count = parseIntSafe(playerCount, 0);
     const alerts = plugin2.config && plugin2.config.alerts ? plugin2.config.alerts : [];
@@ -1017,7 +1018,24 @@ var _b = (() => {
     if (highestThreshold >= 1) return 3066993;
     return 3447003;
   }
-  function buildStatusPayload(plugin2, serverName, playerCount, mapInfo, modeInfo) {
+  function getSnapshotCount(snapshot) {
+    return parseIntSafe(snapshot && snapshot.playerCount, 0);
+  }
+  function sortedServerKeysByPopulation(statusSnapshotByServer) {
+    const keys = Object.keys(statusSnapshotByServer || {});
+    keys.sort(function(leftKey, rightKey) {
+      const leftCount = getSnapshotCount(statusSnapshotByServer[leftKey]);
+      const rightCount = getSnapshotCount(statusSnapshotByServer[rightKey]);
+      if (leftCount !== rightCount) return rightCount - leftCount;
+      return String(leftKey).localeCompare(String(rightKey));
+    });
+    return keys;
+  }
+  function buildServerEmbed(plugin2, snapshot) {
+    const serverName = String(snapshot && snapshot.serverName ? snapshot.serverName : "(unknown server)");
+    const playerCount = getSnapshotCount(snapshot);
+    const mapInfo = snapshot && snapshot.mapInfo ? snapshot.mapInfo : null;
+    const modeInfo = snapshot && snapshot.modeInfo ? snapshot.modeInfo : null;
     const mapReadable = pickCleanString([mapInfo && mapInfo.readable]);
     const mapSlug = pickCleanString([mapInfo && mapInfo.slug]);
     const modeReadable = pickCleanString([modeInfo && modeInfo.readable]);
@@ -1025,110 +1043,118 @@ var _b = (() => {
     const modeText = modeReadable || "unknown";
     const imageUrl = resolveT6ThumbnailUrl(mapSlug, mapReadable);
     const embed = {
-      title: serverName,
-      description: "Players: **" + playerCount + "/" + MAX_PLAYERS + "**\nMap: " + mapText + "\nMode: " + modeText,
+      title: serverName + " (" + playerCount + "/" + MAX_PLAYERS + ")",
+      description: "Map: " + mapText + "\nMode: " + modeText,
       color: statusColor(plugin2, playerCount)
     };
     if (imageUrl) {
-      embed.image = { url: imageUrl };
+      embed.thumbnail = { url: imageUrl };
+    }
+    return embed;
+  }
+  function buildStatusPayload(plugin2, statusSnapshotByServer) {
+    const serverKeys = sortedServerKeysByPopulation(statusSnapshotByServer).slice(0, MAX_DASHBOARD_EMBEDS);
+    const embeds = [];
+    for (let i = 0; i < serverKeys.length; i++) {
+      const serverKey = serverKeys[i];
+      const snapshot = statusSnapshotByServer[serverKey];
+      if (!snapshot) continue;
+      embeds.push(buildServerEmbed(plugin2, snapshot));
+    }
+    if (embeds.length === 0) {
+      embeds.push({
+        title: "Server Population",
+        description: "No server data available yet.",
+        color: 3447003
+      });
     }
     return {
       content: "",
-      embeds: [embed],
+      embeds,
       allowed_mentions: { parse: [] }
     };
   }
-  function ensureStatusSyncState(plugin2, serverKey) {
-    let sync = plugin2.runtime.statusSyncByServer[serverKey];
+  function ensureStatusSyncState(plugin2) {
+    let sync = plugin2.runtime.statusDashboardSync;
     if (!sync) {
       sync = {
         inFlight: false,
         pending: null
       };
-      plugin2.runtime.statusSyncByServer[serverKey] = sync;
+      plugin2.runtime.statusDashboardSync = sync;
     }
     return sync;
   }
-  function dispatchStatusUpsert(plugin2, serverKey, update) {
-    const sync = ensureStatusSyncState(plugin2, serverKey);
+  function dispatchStatusUpsert(plugin2, update) {
+    const sync = ensureStatusSyncState(plugin2);
     sync.inFlight = true;
-    const existingMessageId = plugin2.runtime.statusMessageIdByServer[serverKey] || "";
+    const existingMessageId = plugin2.runtime.statusDashboardMessageId || "";
     plugin2.dispatcher.upsertMessage(
       plugin2,
       existingMessageId,
       update.payload,
-      { type: "status", serverKey },
+      { type: "status", serverKey: "dashboard" },
       (ok, messageId, errorText, details) => {
         sync.inFlight = false;
         if (!ok) {
           const retryAfterMs = Math.max(1e3, parseIntSafe(details && details.retryAfterMs, 5e3));
-          plugin2.runtime.statusRetryAtByServer[serverKey] = Date.now() + retryAfterMs;
+          plugin2.runtime.statusDashboardRetryAtMs = Date.now() + retryAfterMs;
           plugin2.logger.logWarning(
-            "{Name}: Failed to upsert status message for {Server} - {Error} (retry_ms={RetryMs})",
+            "{Name}: Failed to upsert status dashboard message - {Error} (retry_ms={RetryMs})",
             plugin2.name,
-            serverKey,
             String(errorText || "unknown upsert error"),
             retryAfterMs
           );
           if (plugin2.pluginHelper && typeof plugin2.pluginHelper.requestNotifyAfterDelay === "function") {
             plugin2.pluginHelper.requestNotifyAfterDelay(retryAfterMs, () => {
-              ensureStatusMessage(plugin2, serverKey, update.serverName, update.playerCount, update.mapInfo, update.modeInfo);
+              ensureStatusMessage(plugin2);
             });
           }
         } else {
-          plugin2.runtime.statusRetryAtByServer[serverKey] = 0;
+          plugin2.runtime.statusDashboardRetryAtMs = 0;
           if (messageId) {
-            plugin2.runtime.statusMessageIdByServer[serverKey] = String(messageId);
+            plugin2.runtime.statusDashboardMessageId = String(messageId);
           }
-          plugin2.runtime.statusFingerprintByServer[serverKey] = update.fingerprint;
+          plugin2.runtime.statusDashboardFingerprint = update.fingerprint;
         }
         const pending = sync.pending;
         sync.pending = null;
         if (pending) {
-          ensureStatusMessage(
-            plugin2,
-            serverKey,
-            pending.serverName,
-            pending.playerCount,
-            pending.mapInfo,
-            pending.modeInfo
-          );
+          ensureStatusMessage(plugin2);
         }
       }
     );
   }
-  function ensureStatusMessage(plugin2, serverKey, serverName, playerCount, mapInfo, modeInfo) {
+  function ensureStatusMessage(plugin2) {
     if (!plugin2.dispatcher || plugin2.dispatcher.count === 0) return;
-    const existingMessageId = plugin2.runtime.statusMessageIdByServer[serverKey] || "";
-    if (!existingMessageId && playerCount <= 0) {
+    const statusSnapshotByServer = plugin2.runtime.statusSnapshotByServer || {};
+    const existingMessageId = plugin2.runtime.statusDashboardMessageId || "";
+    const snapshotCount = Object.keys(statusSnapshotByServer).length;
+    if (!existingMessageId && snapshotCount === 0) {
       return;
     }
-    const payload = buildStatusPayload(plugin2, serverName, playerCount, mapInfo, modeInfo);
+    const payload = buildStatusPayload(plugin2, statusSnapshotByServer);
     const fingerprint = JSON.stringify(payload);
-    const existingFingerprint = plugin2.runtime.statusFingerprintByServer[serverKey] || "";
+    const existingFingerprint = plugin2.runtime.statusDashboardFingerprint || "";
     if (existingMessageId && existingFingerprint === fingerprint) {
       return;
     }
     const update = {
-      serverName,
-      playerCount,
-      mapInfo,
-      modeInfo,
       payload,
       fingerprint
     };
-    const sync = ensureStatusSyncState(plugin2, serverKey);
+    const sync = ensureStatusSyncState(plugin2);
     if (sync.inFlight) {
       sync.pending = update;
       return;
     }
     const nowMs = Date.now();
-    const retryAtMs = parseIntSafe(plugin2.runtime.statusRetryAtByServer[serverKey], 0);
+    const retryAtMs = parseIntSafe(plugin2.runtime.statusDashboardRetryAtMs, 0);
     if (retryAtMs > nowMs) {
       sync.pending = update;
       return;
     }
-    dispatchStatusUpsert(plugin2, serverKey, update);
+    dispatchStatusUpsert(plugin2, update);
   }
 
   // src/threshold-notify.js
@@ -1438,11 +1464,12 @@ var _b = (() => {
       mapInfoByServer: {},
       modeInfoByServer: {},
       serverProbeLoggedByServer: {},
-      statusMessageIdByServer: {},
-      statusSyncByServer: {},
-      statusRetryAtByServer: {},
+      statusSnapshotByServer: {},
+      statusDashboardMessageId: "",
+      statusDashboardSync: null,
+      statusDashboardRetryAtMs: 0,
       notifyMessageIdByServer: {},
-      statusFingerprintByServer: {},
+      statusDashboardFingerprint: "",
       notifyDeleteInFlightByServer: {},
       globalNotifyLastAtMs: 0,
       globalNotifyDispatchInFlight: false,
@@ -1462,7 +1489,7 @@ var _b = (() => {
         if (!newConfig) return;
         this.config = sanitizeConfig(newConfig);
         this.refreshNotifiers();
-        this.runtime.statusFingerprintByServer = {};
+        this.runtime.statusDashboardFingerprint = "";
         this.logger.logInformation(
           "{Name}: Config reloaded. alerts={Alerts} notifiers={Notifiers}",
           this.name,
@@ -1539,6 +1566,7 @@ var _b = (() => {
     },
     refreshStatusMessages: function() {
       const keys = Object.keys(this.runtime.populationStateByServer || {});
+      this.runtime.statusSnapshotByServer = {};
       for (let i = 0; i < keys.length; i++) {
         const serverKey = keys[i];
         const server = this.runtime.serverByKey[serverKey];
@@ -1548,8 +1576,14 @@ var _b = (() => {
         const serverName = cleanName(server.serverName || server.ServerName || server.hostname || server.Hostname || serverKey);
         const mapInfo = mergeNamedInfo(this.runtime.mapInfoByServer[serverKey], extractMapInfoFromServer(server));
         const modeInfo = mergeNamedInfo(this.runtime.modeInfoByServer[serverKey], extractModeInfoFromServer(server));
-        ensureStatusMessage(this, serverKey, serverName, count, mapInfo, modeInfo);
+        this.runtime.statusSnapshotByServer[serverKey] = {
+          serverName,
+          playerCount: count,
+          mapInfo,
+          modeInfo
+        };
       }
+      ensureStatusMessage(this);
     },
     onClientStateInitialized: function(eventObj) {
       const server = extractServerFromEvent(eventObj);
@@ -1688,7 +1722,13 @@ var _b = (() => {
         );
         return;
       }
-      ensureStatusMessage(this, serverKey, serverName, playerCount, mapInfo, modeInfo);
+      this.runtime.statusSnapshotByServer[serverKey] = {
+        serverName,
+        playerCount,
+        mapInfo,
+        modeInfo
+      };
+      ensureStatusMessage(this);
       evaluatePopulation(this, serverKey, serverName, playerCount, {
         source: String(source || "unknown"),
         countSource,
@@ -1713,7 +1753,7 @@ var _b = (() => {
       const cooldownMinutes = remainingCooldownMinutes(this);
       const cooldownText = cooldownMinutes > 0 ? cooldownMinutes + "m" : "ready";
       commandEvent.origin.tell(
-        "Population Notifier v" + this.version + " | alerts=" + thresholdListText(this.config.alerts) + " | notifiers=" + this.notifierNamesText() + " | discord=" + (this.config.discordBotToken && this.config.discordChannelId ? "configured" : "missing") + " | cooldown=" + cooldownText + " | status_msgs=" + Object.keys(this.runtime.statusMessageIdByServer || {}).length + " | notify_msgs=" + Object.keys(this.runtime.notifyMessageIdByServer || {}).length + " | servers=" + (serverSummaries.length > 0 ? serverSummaries.join(", ") : "(none)")
+        "Population Notifier v" + this.version + " | alerts=" + thresholdListText(this.config.alerts) + " | notifiers=" + this.notifierNamesText() + " | discord=" + (this.config.discordBotToken && this.config.discordChannelId ? "configured" : "missing") + " | cooldown=" + cooldownText + " | status_msg=" + (this.runtime.statusDashboardMessageId ? "1" : "0") + " | notify_msgs=" + Object.keys(this.runtime.notifyMessageIdByServer || {}).length + " | servers=" + (serverSummaries.length > 0 ? serverSummaries.join(", ") : "(none)")
       );
     }
   };

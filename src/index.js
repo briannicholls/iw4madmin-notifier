@@ -48,11 +48,12 @@ const plugin = {
     mapInfoByServer: {},
     modeInfoByServer: {},
     serverProbeLoggedByServer: {},
-    statusMessageIdByServer: {},
-    statusSyncByServer: {},
-    statusRetryAtByServer: {},
+    statusSnapshotByServer: {},
+    statusDashboardMessageId: '',
+    statusDashboardSync: null,
+    statusDashboardRetryAtMs: 0,
     notifyMessageIdByServer: {},
-    statusFingerprintByServer: {},
+    statusDashboardFingerprint: '',
     notifyDeleteInFlightByServer: {},
     globalNotifyLastAtMs: 0,
     globalNotifyDispatchInFlight: false,
@@ -77,7 +78,7 @@ const plugin = {
 
       this.config = sanitizeConfig(newConfig);
       this.refreshNotifiers();
-      this.runtime.statusFingerprintByServer = {};
+      this.runtime.statusDashboardFingerprint = '';
 
       this.logger.logInformation('{Name}: Config reloaded. alerts={Alerts} notifiers={Notifiers}',
         this.name,
@@ -161,6 +162,8 @@ const plugin = {
 
   refreshStatusMessages: function () {
     const keys = Object.keys(this.runtime.populationStateByServer || {});
+    this.runtime.statusSnapshotByServer = {};
+
     for (let i = 0; i < keys.length; i++) {
       const serverKey = keys[i];
       const server = this.runtime.serverByKey[serverKey];
@@ -171,8 +174,15 @@ const plugin = {
       const serverName = cleanName(server.serverName || server.ServerName || server.hostname || server.Hostname || serverKey);
       const mapInfo = mergeNamedInfo(this.runtime.mapInfoByServer[serverKey], extractMapInfoFromServer(server));
       const modeInfo = mergeNamedInfo(this.runtime.modeInfoByServer[serverKey], extractModeInfoFromServer(server));
-      ensureStatusMessage(this, serverKey, serverName, count, mapInfo, modeInfo);
+      this.runtime.statusSnapshotByServer[serverKey] = {
+        serverName: serverName,
+        playerCount: count,
+        mapInfo: mapInfo,
+        modeInfo: modeInfo
+      };
     }
+
+    ensureStatusMessage(this);
   },
 
   onClientStateInitialized: function (eventObj) {
@@ -318,7 +328,14 @@ const plugin = {
       return;
     }
 
-    ensureStatusMessage(this, serverKey, serverName, playerCount, mapInfo, modeInfo);
+    this.runtime.statusSnapshotByServer[serverKey] = {
+      serverName: serverName,
+      playerCount: playerCount,
+      mapInfo: mapInfo,
+      modeInfo: modeInfo
+    };
+
+    ensureStatusMessage(this);
 
     evaluatePopulation(this, serverKey, serverName, playerCount, {
       source: String(source || 'unknown'),
@@ -354,7 +371,7 @@ const plugin = {
       + ' | notifiers=' + this.notifierNamesText()
       + ' | discord=' + (this.config.discordBotToken && this.config.discordChannelId ? 'configured' : 'missing')
       + ' | cooldown=' + cooldownText
-      + ' | status_msgs=' + Object.keys(this.runtime.statusMessageIdByServer || {}).length
+      + ' | status_msg=' + (this.runtime.statusDashboardMessageId ? '1' : '0')
       + ' | notify_msgs=' + Object.keys(this.runtime.notifyMessageIdByServer || {}).length
       + ' | servers=' + (serverSummaries.length > 0 ? serverSummaries.join(', ') : '(none)')
     );

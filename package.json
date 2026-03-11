@@ -8,7 +8,6 @@
     "watch": "node scripts/watch.mjs"
   },
   "devDependencies": {
-    "esbuild": "^0.25.0",
-    "sharp": "^0.33.5"
+    "esbuild": "^0.25.0"
   }
 }

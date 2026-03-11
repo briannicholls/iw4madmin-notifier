@@ -4,12 +4,12 @@ JavaScript plugin for [IW4MAdmin](https://github.com/RaidMax/IW4M-Admin) that po
 
 ## What It Does
 
-- Maintains one persistent status message per server in a Discord channel.
-- Updates each status message with current player count, readable map name, and readable mode name.
+- Maintains one persistent status dashboard message in a Discord channel.
+- Updates that dashboard with up to 10 server embeds, sorted by highest player count first.
 - Sends separate `@here` notify messages when thresholds are crossed.
 - Enforces a global anti-spam cooldown: max one notify message every 1 hour (across all servers).
 - Auto-deletes a server's active notify message when that server drops below 3 players.
-- Uses pre-hosted BO2 map thumbnails from the `iw4m` S3 bucket in status embeds.
+- Uses pre-hosted BO2 map thumbnails from the `iw4m` S3 bucket as compact embed thumbnails.
 
 ## Installation
 
@@ -75,14 +75,14 @@ These placeholders are available in each alert `message`:
 - Startup full-server exception: if server is already full (`18/18`), startup notify is skipped.
 - Notify cooldown: only one notify send per 60 minutes globally across all servers.
 - Notify cleanup: active notify message for a server is deleted whenever observed population is below `3` players (including enter/leave activity events).
-- Status creation guard: a new status message is not created while server population is `0`; once created, it can still be updated to `0/18`.
+- Status dashboard shape: one message with up to `10` embeds (top 10 by current player count; ties are sorted by server key).
+- Status dashboard image size: each server card uses `embed.thumbnail` (compact) instead of full-width images.
 - Notify message format: one sentence with `@here` and your configured threshold message.
 
 ## Thumbnail Pipeline
 
 - Thumbnail URLs are resolved against the fixed base URL: `https://iw4m.s3.us-east-2.amazonaws.com`.
 - Status embeds resolve map images as `https://iw4m.s3.us-east-2.amazonaws.com/loadscreen_<mapSlug>.jpg`.
-- Local thumbnail generation is optional and not part of `npm run build`.
 
 ## S3 Bucket Setup
 
