@@ -49,10 +49,11 @@ function buildServerEmbed(plugin, snapshot) {
   const imageUrl = resolveT6ThumbnailUrl(mapSlug, mapReadable);
 
   const embed = {
-    title: serverName + ' (' + playerCount + '/' + MAX_PLAYERS + ')',
+    title: serverName,
     description:
-      'Map: ' + mapText + '\n'
-      + 'Mode: ' + modeText,
+      '**Players:** ' + playerCount + '/' + MAX_PLAYERS + '\n'
+      + '**Map:** ' + mapText + '\n'
+      + '**Mode:** ' + modeText,
     color: statusColor(plugin, playerCount)
   };
 

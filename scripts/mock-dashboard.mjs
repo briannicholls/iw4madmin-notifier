@@ -120,8 +120,11 @@ function buildPayload(serverCount) {
   const snapshots = buildMockSnapshots(serverCount);
   const embeds = snapshots.map((snapshot) => {
     return {
-      title: snapshot.serverName + ' (' + snapshot.playerCount + '/' + MAX_PLAYERS + ')',
-      description: 'Map: ' + snapshot.mapText + '\n' + 'Mode: ' + snapshot.modeText,
+      title: snapshot.serverName,
+      description:
+        '**Players:** ' + snapshot.playerCount + '/' + MAX_PLAYERS + '\n'
+        + '**Map:** ' + snapshot.mapText + '\n'
+        + '**Mode:** ' + snapshot.modeText,
       color: statusColor(snapshot.playerCount),
       thumbnail: { url: snapshot.imageUrl }
     };
