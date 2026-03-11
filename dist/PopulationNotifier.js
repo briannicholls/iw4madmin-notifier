@@ -1043,8 +1043,8 @@ var _b = (() => {
     const modeText = modeReadable || "unknown";
     const imageUrl = resolveT6ThumbnailUrl(mapSlug, mapReadable);
     const embed = {
-      title: serverName + " (" + playerCount + "/" + MAX_PLAYERS + ")",
-      description: "Map: " + mapText + "\nMode: " + modeText,
+      title: serverName,
+      description: "**Players:** " + playerCount + "/" + MAX_PLAYERS + "\n**Map:** " + mapText + "\n**Mode:** " + modeText,
       color: statusColor(plugin2, playerCount)
     };
     if (imageUrl) {
