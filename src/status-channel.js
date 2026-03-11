@@ -3,6 +3,8 @@ import { parseIntSafe } from './utils.js';
 import { pickCleanString } from './server-metadata.js';
 import { resolveT6ThumbnailUrl } from './t6-thumbnails.js';
 
+const MAX_DASHBOARD_EMBEDS = 10;
+
 function statusColor(plugin, playerCount) {
   const count = parseIntSafe(playerCount, 0);
   const alerts = plugin.config && plugin.config.alerts ? plugin.config.alerts : [];
@@ -19,140 +21,169 @@ function statusColor(plugin, playerCount) {
   return 3447003;
 }
 
-export function buildStatusPayload(plugin, serverName, playerCount, mapInfo, modeInfo) {
+function getSnapshotCount(snapshot) {
+  return parseIntSafe(snapshot && snapshot.playerCount, 0);
+}
+
+function sortedServerKeysByPopulation(statusSnapshotByServer) {
+  const keys = Object.keys(statusSnapshotByServer || {});
+  keys.sort(function (leftKey, rightKey) {
+    const leftCount = getSnapshotCount(statusSnapshotByServer[leftKey]);
+    const rightCount = getSnapshotCount(statusSnapshotByServer[rightKey]);
+    if (leftCount !== rightCount) return rightCount - leftCount;
+    return String(leftKey).localeCompare(String(rightKey));
+  });
+  return keys;
+}
+
+function buildServerEmbed(plugin, snapshot) {
+  const serverName = String(snapshot && snapshot.serverName ? snapshot.serverName : '(unknown server)');
+  const playerCount = getSnapshotCount(snapshot);
+  const mapInfo = snapshot && snapshot.mapInfo ? snapshot.mapInfo : null;
+  const modeInfo = snapshot && snapshot.modeInfo ? snapshot.modeInfo : null;
   const mapReadable = pickCleanString([mapInfo && mapInfo.readable]);
   const mapSlug = pickCleanString([mapInfo && mapInfo.slug]);
   const modeReadable = pickCleanString([modeInfo && modeInfo.readable]);
-
   const mapText = mapReadable || 'unknown';
   const modeText = modeReadable || 'unknown';
   const imageUrl = resolveT6ThumbnailUrl(mapSlug, mapReadable);
 
   const embed = {
-    title: serverName,
+    title: serverName + ' (' + playerCount + '/' + MAX_PLAYERS + ')',
     description:
-      'Players: **' + playerCount + '/' + MAX_PLAYERS + '**\n'
-      + 'Map: ' + mapText + '\n'
+      'Map: ' + mapText + '\n'
       + 'Mode: ' + modeText,
     color: statusColor(plugin, playerCount)
   };
 
   if (imageUrl) {
-    embed.image = { url: imageUrl };
+    embed.thumbnail = { url: imageUrl };
+  }
+
+  return embed;
+}
+
+export function buildStatusPayload(plugin, statusSnapshotByServer) {
+  const serverKeys = sortedServerKeysByPopulation(statusSnapshotByServer).slice(0, MAX_DASHBOARD_EMBEDS);
+  const embeds = [];
+
+  for (let i = 0; i < serverKeys.length; i++) {
+    const serverKey = serverKeys[i];
+    const snapshot = statusSnapshotByServer[serverKey];
+    if (!snapshot) continue;
+    embeds.push(buildServerEmbed(plugin, snapshot));
+  }
+
+  if (embeds.length === 0) {
+    embeds.push({
+      title: 'Server Population',
+      description: 'No server data available yet.',
+      color: 3447003
+    });
   }
 
   return {
     content: '',
-    embeds: [embed],
+    embeds: embeds,
     allowed_mentions: { parse: [] }
   };
 }
 
-export function ensureStatusSyncState(plugin, serverKey) {
-  let sync = plugin.runtime.statusSyncByServer[serverKey];
+export function ensureStatusSyncState(plugin) {
+  let sync = plugin.runtime.statusDashboardSync;
   if (!sync) {
     sync = {
       inFlight: false,
       pending: null
     };
-    plugin.runtime.statusSyncByServer[serverKey] = sync;
+    plugin.runtime.statusDashboardSync = sync;
   }
 
   return sync;
 }
 
-export function dispatchStatusUpsert(plugin, serverKey, update) {
-  const sync = ensureStatusSyncState(plugin, serverKey);
+export function dispatchStatusUpsert(plugin, update) {
+  const sync = ensureStatusSyncState(plugin);
   sync.inFlight = true;
 
-  const existingMessageId = plugin.runtime.statusMessageIdByServer[serverKey] || '';
+  const existingMessageId = plugin.runtime.statusDashboardMessageId || '';
 
   plugin.dispatcher.upsertMessage(
     plugin,
     existingMessageId,
     update.payload,
-    { type: 'status', serverKey: serverKey },
+    { type: 'status', serverKey: 'dashboard' },
     (ok, messageId, errorText, details) => {
       sync.inFlight = false;
 
       if (!ok) {
         const retryAfterMs = Math.max(1000, parseIntSafe(details && details.retryAfterMs, 5000));
-        plugin.runtime.statusRetryAtByServer[serverKey] = Date.now() + retryAfterMs;
+        plugin.runtime.statusDashboardRetryAtMs = Date.now() + retryAfterMs;
 
-        plugin.logger.logWarning('{Name}: Failed to upsert status message for {Server} - {Error} (retry_ms={RetryMs})',
+        plugin.logger.logWarning('{Name}: Failed to upsert status dashboard message - {Error} (retry_ms={RetryMs})',
           plugin.name,
-          serverKey,
           String(errorText || 'unknown upsert error'),
           retryAfterMs);
 
         if (plugin.pluginHelper && typeof plugin.pluginHelper.requestNotifyAfterDelay === 'function') {
           plugin.pluginHelper.requestNotifyAfterDelay(retryAfterMs, () => {
-            ensureStatusMessage(plugin, serverKey, update.serverName, update.playerCount, update.mapInfo, update.modeInfo);
+            ensureStatusMessage(plugin);
           });
         }
       } else {
-        plugin.runtime.statusRetryAtByServer[serverKey] = 0;
+        plugin.runtime.statusDashboardRetryAtMs = 0;
 
         if (messageId) {
-          plugin.runtime.statusMessageIdByServer[serverKey] = String(messageId);
+          plugin.runtime.statusDashboardMessageId = String(messageId);
         }
 
-        plugin.runtime.statusFingerprintByServer[serverKey] = update.fingerprint;
+        plugin.runtime.statusDashboardFingerprint = update.fingerprint;
       }
 
       const pending = sync.pending;
       sync.pending = null;
       if (pending) {
-        ensureStatusMessage(
-          plugin,
-          serverKey,
-          pending.serverName,
-          pending.playerCount,
-          pending.mapInfo,
-          pending.modeInfo
-        );
+        ensureStatusMessage(plugin);
       }
     }
   );
 }
 
-export function ensureStatusMessage(plugin, serverKey, serverName, playerCount, mapInfo, modeInfo) {
+export function ensureStatusMessage(plugin) {
   if (!plugin.dispatcher || plugin.dispatcher.count === 0) return;
 
-  const existingMessageId = plugin.runtime.statusMessageIdByServer[serverKey] || '';
-  if (!existingMessageId && playerCount <= 0) {
+  const statusSnapshotByServer = plugin.runtime.statusSnapshotByServer || {};
+  const existingMessageId = plugin.runtime.statusDashboardMessageId || '';
+  const snapshotCount = Object.keys(statusSnapshotByServer).length;
+  if (!existingMessageId && snapshotCount === 0) {
     return;
   }
 
-  const payload = buildStatusPayload(plugin, serverName, playerCount, mapInfo, modeInfo);
+  const payload = buildStatusPayload(plugin, statusSnapshotByServer);
   const fingerprint = JSON.stringify(payload);
-  const existingFingerprint = plugin.runtime.statusFingerprintByServer[serverKey] || '';
+  const existingFingerprint = plugin.runtime.statusDashboardFingerprint || '';
 
   if (existingMessageId && existingFingerprint === fingerprint) {
     return;
   }
 
   const update = {
-    serverName: serverName,
-    playerCount: playerCount,
-    mapInfo: mapInfo,
-    modeInfo: modeInfo,
     payload: payload,
     fingerprint: fingerprint
   };
 
-  const sync = ensureStatusSyncState(plugin, serverKey);
+  const sync = ensureStatusSyncState(plugin);
   if (sync.inFlight) {
     sync.pending = update;
     return;
   }
 
   const nowMs = Date.now();
-  const retryAtMs = parseIntSafe(plugin.runtime.statusRetryAtByServer[serverKey], 0);
+  const retryAtMs = parseIntSafe(plugin.runtime.statusDashboardRetryAtMs, 0);
   if (retryAtMs > nowMs) {
     sync.pending = update;
     return;
   }
 
-  dispatchStatusUpsert(plugin, serverKey, update);
+  dispatchStatusUpsert(plugin, update);
 }
