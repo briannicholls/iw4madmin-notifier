@@ -119,6 +119,22 @@ Minimal read-only bucket policy example:
 |---|---|---|---|
 | `!popnotify` | `!pn` | User | Shows plugin status (thresholds, cooldown, known servers, active messages). |
 
+## Local Dashboard Mocking
+
+Use this when you want to preview the single-message Discord dashboard with many fake servers.
+
+- Generate payload only (no Discord send):
+  - `npm run mock:dashboard`
+- Generate payload with a custom server count:
+  - `npm run mock:dashboard -- --servers 20`
+- Post a mock dashboard directly to your Discord channel:
+  - `DISCORD_BOT_TOKEN=... DISCORD_CHANNEL_ID=... npm run mock:dashboard -- --servers 20 --send`
+
+Notes:
+- The script auto-loads `.env` from the repo root if present (`DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID`).
+- The mock follows the same top-10 behavior as the plugin dashboard.
+- It uses compact right-side `thumbnail` images so you can preview the exact layout constraints.
+
 ## Troubleshooting
 
 - Confirm bot permissions in the channel: `View Channel`, `Send Messages`, `Embed Links`, and `Mention @everyone, @here, and All Roles`.

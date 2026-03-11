@@ -5,7 +5,8 @@
   "description": "IW4MAdmin plugin that sends Discord alerts as servers fill up",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "watch": "node scripts/watch.mjs"
+    "watch": "node scripts/watch.mjs",
+    "mock:dashboard": "node scripts/mock-dashboard.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"
