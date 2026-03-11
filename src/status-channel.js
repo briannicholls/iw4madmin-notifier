@@ -1,4 +1,4 @@
-import { MAX_PLAYERS, resolveMapImageUrl } from './config.js';
+import { MAX_PLAYERS } from './config.js';
 import { parseIntSafe } from './utils.js';
 import { pickCleanString } from './server-metadata.js';
 import { resolveT6ThumbnailUrl } from './t6-thumbnails.js';
@@ -26,9 +26,7 @@ export function buildStatusPayload(plugin, serverName, playerCount, mapInfo, mod
 
   const mapText = mapReadable || 'unknown';
   const modeText = modeReadable || 'unknown';
-  const imageLookupName = mapSlug || mapReadable;
-  const imageUrl = resolveMapImageUrl(plugin.config && plugin.config.mapImageUrls, imageLookupName)
-    || resolveT6ThumbnailUrl(plugin.config && plugin.config.thumbnailBaseUrl, mapSlug, mapReadable);
+  const imageUrl = resolveT6ThumbnailUrl(mapSlug, mapReadable);
 
   const embed = {
     title: serverName,

@@ -27,7 +27,7 @@ var _b = (() => {
 
   // src/utils.js
   function cleanName(value) {
-    return String(value == null ? "" : value).replace(/[\x00-\x1F\x7F]/g, "").trim();
+    return String(value == null ? "" : value).replace(/\^./g, "").replace(/[\x00-\x1F\x7F]/g, "").trim();
   }
   function normalizeNetworkId(value) {
     if (value == null) return "";
@@ -125,7 +125,6 @@ var _b = (() => {
   var NOTIFY_CLEAR_BELOW_COUNT = 3;
   var NOTIFY_MENTION_PREFIX = "@here";
   var DEFAULT_THUMBNAIL_BASE_URL = "https://iw4m.s3.us-east-2.amazonaws.com";
-  var LEGACY_DEFAULT_THUMBNAIL_BASE_URL = "https://iw4m.s3.amazonaws.com/t6_map_thumbnails_16x9";
   var DEFAULT_ALERTS = [
     {
       threshold: 1,
@@ -148,9 +147,7 @@ var _b = (() => {
   var defaultConfig = {
     alerts: DEFAULT_ALERTS.map(copyAlert),
     discordBotToken: "",
-    discordChannelId: "",
-    thumbnailBaseUrl: DEFAULT_THUMBNAIL_BASE_URL,
-    mapImageUrls: {}
+    discordChannelId: ""
   };
   function copyAlert(alert) {
     return {
@@ -200,31 +197,12 @@ var _b = (() => {
   function normalizeMapKey(value) {
     return cleanName(value).toLowerCase();
   }
-  function sanitizeMapImageUrls(rawValue) {
-    if (!rawValue || typeof rawValue !== "object") return {};
-    const source = rawValue;
-    const out = {};
-    const keys = Object.keys(source);
-    for (let i = 0; i < keys.length; i++) {
-      const rawKey = keys[i];
-      const normalizedKey = normalizeMapKey(rawKey);
-      if (!normalizedKey) continue;
-      const url = String(source[rawKey] == null ? "" : source[rawKey]).trim();
-      if (!url) continue;
-      out[normalizedKey] = url;
-    }
-    return out;
-  }
   function sanitizeConfig(rawConfig) {
     const source = rawConfig || {};
-    const configuredThumbnailBaseUrlRaw = String(source.thumbnailBaseUrl == null ? "" : source.thumbnailBaseUrl).trim();
-    const configuredThumbnailBaseUrl = configuredThumbnailBaseUrlRaw === LEGACY_DEFAULT_THUMBNAIL_BASE_URL ? DEFAULT_THUMBNAIL_BASE_URL : configuredThumbnailBaseUrlRaw;
     return {
       alerts: sanitizeAlerts(source.alerts),
       discordBotToken: String(source.discordBotToken == null ? "" : source.discordBotToken).trim(),
-      discordChannelId: String(source.discordChannelId == null ? "" : source.discordChannelId).trim(),
-      thumbnailBaseUrl: configuredThumbnailBaseUrl || DEFAULT_THUMBNAIL_BASE_URL,
-      mapImageUrls: sanitizeMapImageUrls(source.mapImageUrls)
+      discordChannelId: String(source.discordChannelId == null ? "" : source.discordChannelId).trim()
     };
   }
   function thresholdListText(alerts) {
@@ -252,14 +230,6 @@ var _b = (() => {
       threshold,
       fillPercent
     };
-  }
-  function resolveMapImageUrl(mapImageUrls, mapName) {
-    const key = normalizeMapKey(mapName);
-    if (!key) return "";
-    const source = mapImageUrls || {};
-    const value = source[key];
-    if (!value) return "";
-    return String(value);
   }
 
   // src/event-extractors.js
@@ -1025,8 +995,8 @@ var _b = (() => {
     }
     return "";
   }
-  function resolveT6ThumbnailUrl(baseUrl, mapSlug, mapReadable) {
-    const base = normalizeBaseUrl(baseUrl);
+  function resolveT6ThumbnailUrl(mapSlug, mapReadable) {
+    const base = normalizeBaseUrl(DEFAULT_THUMBNAIL_BASE_URL);
     if (!base) return "";
     const fileName = resolveFileName(mapSlug, mapReadable);
     if (!fileName) return "";
@@ -1053,8 +1023,7 @@ var _b = (() => {
     const modeReadable = pickCleanString([modeInfo && modeInfo.readable]);
     const mapText = mapReadable || "unknown";
     const modeText = modeReadable || "unknown";
-    const imageLookupName = mapSlug || mapReadable;
-    const imageUrl = resolveMapImageUrl(plugin2.config && plugin2.config.mapImageUrls, imageLookupName) || resolveT6ThumbnailUrl(plugin2.config && plugin2.config.thumbnailBaseUrl, mapSlug, mapReadable);
+    const imageUrl = resolveT6ThumbnailUrl(mapSlug, mapReadable);
     const embed = {
       title: serverName,
       description: "Players: **" + playerCount + "/" + MAX_PLAYERS + "**\nMap: " + mapText + "\nMode: " + modeText,
@@ -1522,12 +1491,10 @@ var _b = (() => {
         this.notifierNamesText()
       );
       this.logger.logInformation(
-        "{Name}: Discord config token_set={TokenSet} channel_set={ChannelSet} thumbnail_base_url={ThumbnailBaseUrl} map_images={MapImages}",
+        "{Name}: Discord config token_set={TokenSet} channel_set={ChannelSet}",
         this.name,
         this.config.discordBotToken ? "yes" : "no",
-        this.config.discordChannelId ? "yes" : "no",
-        this.config.thumbnailBaseUrl,
-        Object.keys(this.config.mapImageUrls || {}).length
+        this.config.discordChannelId ? "yes" : "no"
       );
       if (!this.dispatcher || this.dispatcher.count === 0) {
         this.logger.logWarning("{Name}: No notifier destinations configured. Add discordBotToken and discordChannelId to enable alerts.", this.name);

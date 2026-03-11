@@ -107,12 +107,10 @@ const plugin = {
       MAX_PLAYERS,
       this.notifierNamesText());
 
-    this.logger.logInformation('{Name}: Discord config token_set={TokenSet} channel_set={ChannelSet} thumbnail_base_url={ThumbnailBaseUrl} map_images={MapImages}',
+    this.logger.logInformation('{Name}: Discord config token_set={TokenSet} channel_set={ChannelSet}',
       this.name,
       this.config.discordBotToken ? 'yes' : 'no',
-      this.config.discordChannelId ? 'yes' : 'no',
-      this.config.thumbnailBaseUrl,
-      Object.keys(this.config.mapImageUrls || {}).length);
+      this.config.discordChannelId ? 'yes' : 'no');
 
     if (!this.dispatcher || this.dispatcher.count === 0) {
       this.logger.logWarning('{Name}: No notifier destinations configured. Add discordBotToken and discordChannelId to enable alerts.', this.name);

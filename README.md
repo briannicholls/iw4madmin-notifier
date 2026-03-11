@@ -9,16 +9,15 @@ JavaScript plugin for [IW4MAdmin](https://github.com/RaidMax/IW4M-Admin) that po
 - Sends separate `@here` notify messages when thresholds are crossed.
 - Enforces a global anti-spam cooldown: max one notify message every 1 hour (across all servers).
 - Auto-deletes a server's active notify message when that server drops below 3 players.
-- Generates stretched 16:9 BO2 map thumbnails and can use them in status embeds.
+- Uses pre-hosted BO2 map thumbnails from the `iw4m` S3 bucket in status embeds.
 
 ## Installation
 
 1. Run `npm install`.
 2. Run `npm run build`.
 3. Copy `dist/PopulationNotifier.js` into your IW4MAdmin `Plugins` folder.
-4. Upload the files from `dist/t6_map_thumbnails_16x9/` to your public static host (for your setup, bucket root under `iw4m`).
-5. Restart IW4MAdmin.
-6. Edit plugin config in:
+4. Restart IW4MAdmin.
+5. Edit plugin config in:
 
 ```
 <IW4MAdmin>/Configuration/ScriptPluginSettings.json
@@ -33,8 +32,6 @@ Config is stored under your script plugin entry key in the `config` object.
 | `alerts` | array | `[{threshold:1,...},{threshold:6,...},{threshold:11,...}]` | Threshold/message rules. Each rule is `{ "threshold": number, "message": string }`. |
 | `discordBotToken` | string | *(empty)* | Discord bot token used for channel message API calls. |
 | `discordChannelId` | string | *(empty)* | Discord channel id where status + notify messages are posted. |
-| `thumbnailBaseUrl` | string | `https://iw4m.s3.us-east-2.amazonaws.com` | Public base URL for generated `loadscreen_*.jpg` files. Leave unset to use the built-in `iw4m` S3 bucket URL. |
-| `mapImageUrls` | object | `{}` | Optional manual image overrides by map key. These override `thumbnailBaseUrl` when present. |
 
 Example:
 
@@ -55,11 +52,7 @@ Example:
     }
   ],
   "discordBotToken": "BotTokenHere",
-  "discordChannelId": "123456789012345678",
-  "mapImageUrls": {
-    "mp_nuketown": "https://your-cdn.example/maps/mp_nuketown.jpg",
-    "mp_slums": "https://your-cdn.example/maps/mp_slums.jpg"
-  }
+  "discordChannelId": "123456789012345678"
 }
 ```
 
@@ -87,18 +80,16 @@ These placeholders are available in each alert `message`:
 
 ## Thumbnail Pipeline
 
-- Source art is read from `src/t6_map_thumbnails/` using filenames like `loadscreen_mp_raid.jpg`.
-- Build stretches each 2k square image to 16:9 (1920x1080) into `dist/t6_map_thumbnails_16x9/`.
-- Status embeds resolve map images from `thumbnailBaseUrl + /loadscreen_<mapSlug>.jpg`.
+- Thumbnail URLs are resolved against the fixed base URL: `https://iw4m.s3.us-east-2.amazonaws.com`.
+- Status embeds resolve map images as `https://iw4m.s3.us-east-2.amazonaws.com/loadscreen_<mapSlug>.jpg`.
+- Local thumbnail generation is optional and not part of `npm run build`.
 
 ## S3 Bucket Setup
-
-If you host thumbnails in S3, use a public HTTPS URL for `thumbnailBaseUrl`.
 
 - Example base URL:
   - `https://iw4m.s3.us-east-2.amazonaws.com`
 - Required bucket/object settings:
-  - Upload all generated files from `dist/t6_map_thumbnails_16x9/` to bucket root (or adjust `thumbnailBaseUrl` if using a prefix).
+  - Upload all thumbnail files to bucket root with filenames like `loadscreen_mp_raid.jpg`.
   - Ensure objects are publicly readable (`s3:GetObject`) for the files being served.
   - Set object `Content-Type` to `image/jpeg`.
   - Keep URLs unsigned (no temporary query params).

@@ -1,4 +1,4 @@
-import { normalizeMapKey } from './config.js';
+import { DEFAULT_THUMBNAIL_BASE_URL, normalizeMapKey } from './config.js';
 import { T6_THUMBNAIL_FILES } from './generated/t6-thumbnail-manifest.js';
 
 function normalizeBaseUrl(value) {
@@ -94,8 +94,8 @@ function resolveFileName(mapSlug, mapReadable) {
   return '';
 }
 
-export function resolveT6ThumbnailUrl(baseUrl, mapSlug, mapReadable) {
-  const base = normalizeBaseUrl(baseUrl);
+export function resolveT6ThumbnailUrl(mapSlug, mapReadable) {
+  const base = normalizeBaseUrl(DEFAULT_THUMBNAIL_BASE_URL);
   if (!base) return '';
 
   const fileName = resolveFileName(mapSlug, mapReadable);

@@ -5,7 +5,6 @@ export const GLOBAL_NOTIFY_COOLDOWN_MS = 60 * 60 * 1000;
 export const NOTIFY_CLEAR_BELOW_COUNT = 3;
 export const NOTIFY_MENTION_PREFIX = '@here';
 export const DEFAULT_THUMBNAIL_BASE_URL = 'https://iw4m.s3.us-east-2.amazonaws.com';
-const LEGACY_DEFAULT_THUMBNAIL_BASE_URL = 'https://iw4m.s3.amazonaws.com/t6_map_thumbnails_16x9';
 
 const DEFAULT_ALERTS = [
   {
@@ -31,9 +30,7 @@ const LEGACY_DEFAULT_ALERT_MESSAGES = [
 export const defaultConfig = {
   alerts: DEFAULT_ALERTS.map(copyAlert),
   discordBotToken: '',
-  discordChannelId: '',
-  thumbnailBaseUrl: DEFAULT_THUMBNAIL_BASE_URL,
-  mapImageUrls: {}
+  discordChannelId: ''
 };
 
 function copyAlert(alert) {
@@ -96,40 +93,13 @@ export function normalizeMapKey(value) {
   return cleanName(value).toLowerCase();
 }
 
-function sanitizeMapImageUrls(rawValue) {
-  if (!rawValue || typeof rawValue !== 'object') return {};
-
-  const source = rawValue;
-  const out = {};
-  const keys = Object.keys(source);
-
-  for (let i = 0; i < keys.length; i++) {
-    const rawKey = keys[i];
-    const normalizedKey = normalizeMapKey(rawKey);
-    if (!normalizedKey) continue;
-
-    const url = String(source[rawKey] == null ? '' : source[rawKey]).trim();
-    if (!url) continue;
-
-    out[normalizedKey] = url;
-  }
-
-  return out;
-}
-
 export function sanitizeConfig(rawConfig) {
   const source = rawConfig || {};
-  const configuredThumbnailBaseUrlRaw = String(source.thumbnailBaseUrl == null ? '' : source.thumbnailBaseUrl).trim();
-  const configuredThumbnailBaseUrl = configuredThumbnailBaseUrlRaw === LEGACY_DEFAULT_THUMBNAIL_BASE_URL
-    ? DEFAULT_THUMBNAIL_BASE_URL
-    : configuredThumbnailBaseUrlRaw;
 
   return {
     alerts: sanitizeAlerts(source.alerts),
     discordBotToken: String(source.discordBotToken == null ? '' : source.discordBotToken).trim(),
-    discordChannelId: String(source.discordChannelId == null ? '' : source.discordChannelId).trim(),
-    thumbnailBaseUrl: configuredThumbnailBaseUrl || DEFAULT_THUMBNAIL_BASE_URL,
-    mapImageUrls: sanitizeMapImageUrls(source.mapImageUrls)
+    discordChannelId: String(source.discordChannelId == null ? '' : source.discordChannelId).trim()
   };
 }
 
@@ -165,12 +135,3 @@ export function buildMessageContext(serverName, serverKey, playerCount, threshol
   };
 }
 
-export function resolveMapImageUrl(mapImageUrls, mapName) {
-  const key = normalizeMapKey(mapName);
-  if (!key) return '';
-
-  const source = mapImageUrls || {};
-  const value = source[key];
-  if (!value) return '';
-  return String(value);
-}

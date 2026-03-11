@@ -1,5 +1,10 @@
 export function cleanName(value) {
-  return String(value == null ? '' : value).replace(/[\x00-\x1F\x7F]/g, '').trim();
+  return String(value == null ? '' : value)
+    // IW4 style formatting directives are caret-prefixed (e.g. ^1, ^F, ^H...).
+    // Remove directive marker + directive char so display text is plain.
+    .replace(/\^./g, '')
+    .replace(/[\x00-\x1F\x7F]/g, '')
+    .trim();
 }
 
 export function normalizeNetworkId(value) {
