@@ -1,93 +1,9 @@
-import { MAX_PLAYERS } from './config.js';
+import { buildDashboardPayload } from './dashboard-renderer.js';
 import { parseIntSafe } from './utils.js';
-import { pickCleanString } from './server-metadata.js';
-import { resolveT6ThumbnailUrl } from './t6-thumbnails.js';
-
-const MAX_DASHBOARD_EMBEDS = 10;
-
-function statusColor(plugin, playerCount) {
-  const count = parseIntSafe(playerCount, 0);
-  const alerts = plugin.config && plugin.config.alerts ? plugin.config.alerts : [];
-
-  let highestThreshold = 0;
-  for (let i = 0; i < alerts.length; i++) {
-    const threshold = parseIntSafe(alerts[i].threshold, 0);
-    if (count >= threshold && threshold > highestThreshold) highestThreshold = threshold;
-  }
-
-  if (highestThreshold >= 11) return 15158332;
-  if (highestThreshold >= 6) return 15844367;
-  if (highestThreshold >= 1) return 3066993;
-  return 3447003;
-}
-
-function getSnapshotCount(snapshot) {
-  return parseIntSafe(snapshot && snapshot.playerCount, 0);
-}
-
-function sortedServerKeysByPopulation(statusSnapshotByServer) {
-  const keys = Object.keys(statusSnapshotByServer || {});
-  keys.sort(function (leftKey, rightKey) {
-    const leftCount = getSnapshotCount(statusSnapshotByServer[leftKey]);
-    const rightCount = getSnapshotCount(statusSnapshotByServer[rightKey]);
-    if (leftCount !== rightCount) return rightCount - leftCount;
-    return String(leftKey).localeCompare(String(rightKey));
-  });
-  return keys;
-}
-
-function buildServerEmbed(plugin, snapshot) {
-  const serverName = String(snapshot && snapshot.serverName ? snapshot.serverName : '(unknown server)');
-  const playerCount = getSnapshotCount(snapshot);
-  const mapInfo = snapshot && snapshot.mapInfo ? snapshot.mapInfo : null;
-  const modeInfo = snapshot && snapshot.modeInfo ? snapshot.modeInfo : null;
-  const mapReadable = pickCleanString([mapInfo && mapInfo.readable]);
-  const mapSlug = pickCleanString([mapInfo && mapInfo.slug]);
-  const modeReadable = pickCleanString([modeInfo && modeInfo.readable]);
-  const mapText = mapReadable || 'unknown';
-  const modeText = modeReadable || 'unknown';
-  const imageUrl = resolveT6ThumbnailUrl(mapSlug, mapReadable);
-
-  const embed = {
-    title: serverName,
-    description:
-      '**Players:** ' + playerCount + '/' + MAX_PLAYERS + '\n'
-      + '**Map:** ' + mapText + '\n'
-      + '**Mode:** ' + modeText,
-    color: statusColor(plugin, playerCount)
-  };
-
-  if (imageUrl) {
-    embed.thumbnail = { url: imageUrl };
-  }
-
-  return embed;
-}
 
 export function buildStatusPayload(plugin, statusSnapshotByServer) {
-  const serverKeys = sortedServerKeysByPopulation(statusSnapshotByServer).slice(0, MAX_DASHBOARD_EMBEDS);
-  const embeds = [];
-
-  for (let i = 0; i < serverKeys.length; i++) {
-    const serverKey = serverKeys[i];
-    const snapshot = statusSnapshotByServer[serverKey];
-    if (!snapshot) continue;
-    embeds.push(buildServerEmbed(plugin, snapshot));
-  }
-
-  if (embeds.length === 0) {
-    embeds.push({
-      title: 'Server Population',
-      description: 'No server data available yet.',
-      color: 3447003
-    });
-  }
-
-  return {
-    content: '',
-    embeds: embeds,
-    allowed_mentions: { parse: [] }
-  };
+  const alerts = plugin.config && Array.isArray(plugin.config.alerts) ? plugin.config.alerts : [];
+  return buildDashboardPayload(alerts, statusSnapshotByServer);
 }
 
 export function ensureStatusSyncState(plugin) {

@@ -1,14 +1,8 @@
 import { defaultConfig, MAX_PLAYERS, sanitizeConfig, thresholdListText } from './config.js';
 import { cleanName, getPlayerCountFromServer, getServerKey, parseIntSafe } from './utils.js';
+import { extractNetworkIdFromClient } from './event-extractors.js';
 import {
-  extractClientFromEvent,
-  extractNetworkIdFromClient,
-  extractServerFromEvent
-} from './event-extractors.js';
-import {
-  extractMapInfoFromEvent,
   extractMapInfoFromServer,
-  extractModeInfoFromEvent,
   extractModeInfoFromServer,
   listKeys,
   mergeNamedInfo,
@@ -19,6 +13,17 @@ import { createNotificationDispatcher } from './notifiers/index.js';
 import { ensureStatusMessage } from './status-channel.js';
 import { evaluatePopulation } from './population-engine.js';
 import { remainingCooldownMinutes } from './threshold-notify.js';
+import {
+  clearStatusSnapshots,
+  createRuntimeState,
+  ensureActiveNetworkIds,
+  markServerProbeLogged,
+  setKnownServer,
+  setServerMetadata,
+  setStatusSnapshot,
+  wasServerProbeLogged
+} from './plugin-state.js';
+import { normalizeBootstrapObservation, normalizeObservationFromEvent } from './observation-ingress.js';
 
 const PLUGIN_VERSION = typeof __PLUGIN_VERSION__ === 'string' ? __PLUGIN_VERSION__ : '0.0.0-dev';
 
@@ -41,24 +46,7 @@ const plugin = {
   config: sanitizeConfig(defaultConfig),
   dispatcher: null,
 
-  runtime: {
-    serverByKey: {},
-    activeNetworkIdsByServer: {},
-    populationStateByServer: {},
-    mapInfoByServer: {},
-    modeInfoByServer: {},
-    serverProbeLoggedByServer: {},
-    statusSnapshotByServer: {},
-    statusDashboardMessageId: '',
-    statusDashboardSync: null,
-    statusDashboardRetryAtMs: 0,
-    notifyMessageIdByServer: {},
-    statusDashboardFingerprint: '',
-    notifyDeleteInFlightByServer: {},
-    globalNotifyLastAtMs: 0,
-    globalNotifyDispatchInFlight: false,
-    missingNotifierWarned: false
-  },
+  runtime: createRuntimeState(),
 
   onLoad: function (serviceResolver, configWrapper, pluginHelper) {
     this.configWrapper = configWrapper;
@@ -147,22 +135,22 @@ const plugin = {
       servers.length);
 
     for (let i = 0; i < servers.length; i++) {
-      const server = servers[i];
+      const observation = normalizeBootstrapObservation(servers[i]);
       this.observeServerPopulation(
-        server,
-        null,
-        false,
-        'bootstrap_manager',
-        extractMapInfoFromServer(server),
-        extractModeInfoFromServer(server),
-        true
+        observation.server,
+        observation.client,
+        observation.isDisconnect,
+        observation.source,
+        observation.mapHint,
+        observation.modeHint,
+        observation.isBootstrap
       );
     }
   },
 
   refreshStatusMessages: function () {
     const keys = Object.keys(this.runtime.populationStateByServer || {});
-    this.runtime.statusSnapshotByServer = {};
+    clearStatusSnapshots(this);
 
     for (let i = 0; i < keys.length; i++) {
       const serverKey = keys[i];
@@ -174,81 +162,99 @@ const plugin = {
       const serverName = cleanName(server.serverName || server.ServerName || server.hostname || server.Hostname || serverKey);
       const mapInfo = mergeNamedInfo(this.runtime.mapInfoByServer[serverKey], extractMapInfoFromServer(server));
       const modeInfo = mergeNamedInfo(this.runtime.modeInfoByServer[serverKey], extractModeInfoFromServer(server));
-      this.runtime.statusSnapshotByServer[serverKey] = {
+      setStatusSnapshot(this, serverKey, {
         serverName: serverName,
         playerCount: count,
         mapInfo: mapInfo,
         modeInfo: modeInfo
-      };
+      });
     }
 
     ensureStatusMessage(this);
   },
 
   onClientStateInitialized: function (eventObj) {
-    const server = extractServerFromEvent(eventObj);
-    const client = extractClientFromEvent(eventObj);
+    const observation = normalizeObservationFromEvent(eventObj, {
+      isDisconnect: false,
+      source: 'client_state_initialized',
+      isBootstrap: false
+    });
     this.observeServerPopulation(
-      server,
-      client,
-      false,
-      'client_state_initialized',
-      extractMapInfoFromEvent(eventObj),
-      extractModeInfoFromEvent(eventObj),
-      false
+      observation.server,
+      observation.client,
+      observation.isDisconnect,
+      observation.source,
+      observation.mapHint,
+      observation.modeHint,
+      observation.isBootstrap
     );
   },
 
   onClientStateDisposed: function (eventObj) {
-    const server = extractServerFromEvent(eventObj);
-    const client = extractClientFromEvent(eventObj);
+    const observation = normalizeObservationFromEvent(eventObj, {
+      isDisconnect: true,
+      source: 'client_state_disposed',
+      isBootstrap: false
+    });
     this.observeServerPopulation(
-      server,
-      client,
-      true,
-      'client_state_disposed',
-      extractMapInfoFromEvent(eventObj),
-      extractModeInfoFromEvent(eventObj),
-      false
+      observation.server,
+      observation.client,
+      observation.isDisconnect,
+      observation.source,
+      observation.mapHint,
+      observation.modeHint,
+      observation.isBootstrap
     );
   },
 
   onServerMonitoringStarted: function (eventObj) {
-    const server = extractServerFromEvent(eventObj);
+    const observation = normalizeObservationFromEvent(eventObj, {
+      isDisconnect: false,
+      source: 'monitoring_started',
+      isBootstrap: true
+    });
     this.observeServerPopulation(
-      server,
-      null,
-      false,
-      'monitoring_started',
-      extractMapInfoFromEvent(eventObj),
-      extractModeInfoFromEvent(eventObj),
-      true
+      observation.server,
+      observation.client,
+      observation.isDisconnect,
+      observation.source,
+      observation.mapHint,
+      observation.modeHint,
+      observation.isBootstrap
     );
   },
 
   onMatchStarted: function (eventObj) {
-    const server = extractServerFromEvent(eventObj);
+    const observation = normalizeObservationFromEvent(eventObj, {
+      isDisconnect: false,
+      source: 'match_started',
+      isBootstrap: false
+    });
     this.observeServerPopulation(
-      server,
-      null,
-      false,
-      'match_started',
-      extractMapInfoFromEvent(eventObj),
-      extractModeInfoFromEvent(eventObj),
-      false
+      observation.server,
+      observation.client,
+      observation.isDisconnect,
+      observation.source,
+      observation.mapHint,
+      observation.modeHint,
+      observation.isBootstrap
     );
   },
 
   onMatchEnded: function (eventObj) {
-    const server = extractServerFromEvent(eventObj);
+    const observation = normalizeObservationFromEvent(eventObj, {
+      isDisconnect: false,
+      source: 'match_ended',
+      isBootstrap: false
+    });
     this.observeServerPopulation(
-      server,
-      null,
-      false,
-      'match_ended',
-      extractMapInfoFromEvent(eventObj),
-      extractModeInfoFromEvent(eventObj),
-      false
+      observation.server,
+      observation.client,
+      observation.isDisconnect,
+      observation.source,
+      observation.mapHint,
+      observation.modeHint,
+      observation.isBootstrap
     );
   },
 
@@ -262,7 +268,7 @@ const plugin = {
 
     const serverKey = getServerKey(server);
     const serverName = cleanName(server.serverName || server.ServerName || server.hostname || server.Hostname || serverKey);
-    this.runtime.serverByKey[serverKey] = server;
+    setKnownServer(this, serverKey, server);
 
     const mapInfo = mergeNamedInfo(
       mapHint,
@@ -272,11 +278,10 @@ const plugin = {
       modeHint,
       mergeNamedInfo(extractModeInfoFromServer(server), this.runtime.modeInfoByServer[serverKey])
     );
-    this.runtime.mapInfoByServer[serverKey] = mapInfo;
-    this.runtime.modeInfoByServer[serverKey] = modeInfo;
+    setServerMetadata(this, serverKey, mapInfo, modeInfo);
 
-    if (!this.runtime.serverProbeLoggedByServer[serverKey]) {
-      this.runtime.serverProbeLoggedByServer[serverKey] = true;
+    if (!wasServerProbeLogged(this, serverKey)) {
+      markServerProbeLogged(this, serverKey);
       this.logger.logInformation('{Name}: PROBE server={Server} server_keys={Keys}',
         this.name,
         serverKey,
@@ -288,11 +293,7 @@ const plugin = {
         textFromUnknown(server.gameType || server.GameType || server.gametype || server.Gametype || '(none)'));
     }
 
-    if (!this.runtime.activeNetworkIdsByServer[serverKey]) {
-      this.runtime.activeNetworkIdsByServer[serverKey] = {};
-    }
-
-    const activeNetworkIds = this.runtime.activeNetworkIdsByServer[serverKey];
+    const activeNetworkIds = ensureActiveNetworkIds(this, serverKey);
     const networkId = extractNetworkIdFromClient(client);
     if (networkId) {
       if (isDisconnect) {
@@ -328,12 +329,12 @@ const plugin = {
       return;
     }
 
-    this.runtime.statusSnapshotByServer[serverKey] = {
+    setStatusSnapshot(this, serverKey, {
       serverName: serverName,
       playerCount: playerCount,
       mapInfo: mapInfo,
       modeInfo: modeInfo
-    };
+    });
 
     ensureStatusMessage(this);
 
