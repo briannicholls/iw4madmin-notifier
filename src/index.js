@@ -106,8 +106,7 @@ const plugin = {
       this.runtime.missingNotifierWarned = true;
     }
 
-    this.bootstrapKnownServers();
-    this.scheduleDelayedBootstrap();
+    this.runStartupPurgeThenBootstrap();
   },
 
   refreshNotifiers: function () {
@@ -125,6 +124,49 @@ const plugin = {
 
     this.pluginHelper.requestNotifyAfterDelay(7000, () => {
       this.bootstrapKnownServers();
+    });
+  },
+
+  startBootstrapFlow: function () {
+    if (this.runtime.startupBootstrapStarted) return;
+    this.runtime.startupBootstrapStarted = true;
+    this.bootstrapKnownServers();
+    this.scheduleDelayedBootstrap();
+  },
+
+  runStartupPurgeThenBootstrap: function () {
+    if (this.runtime.startupPurgeCompleted) {
+      this.startBootstrapFlow();
+      return;
+    }
+    this.runtime.startupPurgeCompleted = true;
+
+    if (!this.dispatcher || typeof this.dispatcher.purgeStartupMessages !== 'function' || this.dispatcher.count === 0) {
+      this.startBootstrapFlow();
+      return;
+    }
+
+    this.logger.logInformation('{Name}: Startup purge scanning prior bot-authored Discord messages', this.name);
+    this.dispatcher.purgeStartupMessages(this, (ok, errorText, stats) => {
+      const summary = stats || { scanned: 0, matched: 0, deleted: 0, pages: 0, rateLimited: false };
+      if (ok) {
+        this.logger.logInformation('{Name}: Startup purge complete scanned={Scanned} matched={Matched} deleted={Deleted} pages={Pages} rate_limited={RateLimited}',
+          this.name,
+          parseIntSafe(summary.scanned, 0),
+          parseIntSafe(summary.matched, 0),
+          parseIntSafe(summary.deleted, 0),
+          parseIntSafe(summary.pages, 0),
+          summary.rateLimited ? 'yes' : 'no');
+      } else {
+        this.logger.logWarning('{Name}: Startup purge failed - {Error} (scanned={Scanned} matched={Matched} deleted={Deleted})',
+          this.name,
+          String(errorText || 'unknown startup purge error'),
+          parseIntSafe(summary.scanned, 0),
+          parseIntSafe(summary.matched, 0),
+          parseIntSafe(summary.deleted, 0));
+      }
+
+      this.startBootstrapFlow();
     });
   },
 

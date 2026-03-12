@@ -45,6 +45,10 @@ function parseRetryAfterMs(parsed) {
   return Math.round(value * 1000);
 }
 
+function parseDiscordErrorCode(parsed) {
+  return parseDiscordCode(parsed);
+}
+
 function isMissingMessageResponse(statusCode, parsed) {
   if (statusCode === 404) return true;
   return parseDiscordCode(parsed) === 10008;
@@ -56,6 +60,11 @@ function isRateLimitedResponse(statusCode, parsed) {
     return /rate\s*limited/i.test(parsed.message);
   }
   return false;
+}
+
+function isRetryableStatusCode(statusCode) {
+  if (!Number.isFinite(statusCode)) return false;
+  return statusCode === 429 || statusCode >= 500;
 }
 
 function tryParseJson(text) {
@@ -97,6 +106,23 @@ function isLikelySuccess(response, statusCode, parsed, text, method) {
 
   if (!text || String(text).trim() === '') return true;
   return false;
+}
+
+function computeRetryDelayMs(details, attemptNumber, defaultDelayMs, maxDelayMs) {
+  const retryAfterMs = Number(details && details.retryAfterMs);
+  if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+    return Math.max(1000, Math.min(maxDelayMs, Math.round(retryAfterMs)));
+  }
+
+  const statusCode = Number(details && details.statusCode);
+  const isRateLimited = !!(details && details.isRateLimited);
+  if (isRateLimited || isRetryableStatusCode(statusCode)) {
+    const attempt = Math.max(1, Number.isFinite(Number(attemptNumber)) ? Number(attemptNumber) : 1);
+    const baseDelay = Math.round(defaultDelayMs * attempt);
+    return Math.max(1000, Math.min(maxDelayMs, baseDelay));
+  }
+
+  return 0;
 }
 
 function buildErrorText(statusCode, parsed, text) {
@@ -192,6 +218,12 @@ export function createDiscordNotifier(config) {
 
   const headers = createHeaders(botToken);
   const createUrl = 'https://discord.com/api/v10/channels/' + channelId + '/messages';
+  const meUrl = 'https://discord.com/api/v10/users/@me';
+  const channelMessagesUrl = 'https://discord.com/api/v10/channels/' + channelId + '/messages';
+  const STARTUP_PURGE_FETCH_MAX_ATTEMPTS = 4;
+  const STARTUP_PURGE_DELETE_MAX_ATTEMPTS = 4;
+  const STARTUP_PURGE_RETRY_DEFAULT_MS = 5000;
+  const STARTUP_PURGE_RETRY_MAX_MS = 60000;
 
   function createMessage(plugin, payload, meta, done) {
     requestJson(plugin, createUrl, 'POST', payload, headers, function (result) {
@@ -234,6 +266,212 @@ export function createDiscordNotifier(config) {
         isMissingMessage: false
       });
     });
+  }
+
+  function getCurrentBotUserId(plugin, done) {
+    requestJson(plugin, meUrl, 'GET', null, headers, function (result) {
+      if (!result.ok) {
+        done(false, '', result.errorText || 'failed to query bot identity', {
+          statusCode: result.statusCode,
+          retryAfterMs: result.retryAfterMs,
+          isRateLimited: result.isRateLimited,
+          isMissingMessage: false,
+          discordCode: parseDiscordErrorCode(result.parsed)
+        });
+        return;
+      }
+
+      const parsed = result.parsed || {};
+      const botUserId = String(parsed.id || '').trim();
+      if (!botUserId) {
+        done(false, '', 'discord bot identity response missing id', {
+          statusCode: result.statusCode,
+          retryAfterMs: 0,
+          isRateLimited: false,
+          isMissingMessage: false,
+          discordCode: 0
+        });
+        return;
+      }
+
+      done(true, botUserId, '', {
+        statusCode: result.statusCode,
+        retryAfterMs: 0,
+        isRateLimited: false,
+        isMissingMessage: false,
+        discordCode: 0
+      });
+    });
+  }
+
+  function listChannelMessages(plugin, beforeMessageId, done) {
+    let url = channelMessagesUrl + '?limit=100';
+    if (beforeMessageId) {
+      url += '&before=' + encodeURIComponent(String(beforeMessageId));
+    }
+
+    requestJson(plugin, url, 'GET', null, headers, function (result) {
+      if (!result.ok) {
+        done(false, [], result.errorText || 'discord list messages failed', {
+          statusCode: result.statusCode,
+          retryAfterMs: result.retryAfterMs,
+          isRateLimited: result.isRateLimited,
+          isMissingMessage: false,
+          discordCode: parseDiscordErrorCode(result.parsed)
+        });
+        return;
+      }
+
+      const messages = Array.isArray(result.parsed) ? result.parsed : [];
+      done(true, messages, '', {
+        statusCode: result.statusCode,
+        retryAfterMs: 0,
+        isRateLimited: false,
+        isMissingMessage: false,
+        discordCode: 0
+      });
+    });
+  }
+
+  function deleteMessageWithRetry(plugin, messageId, attemptNumber, done) {
+    const attempt = Math.max(1, Number(attemptNumber || 1));
+    const url = createUrl + '/' + String(messageId);
+
+    requestJson(plugin, url, 'DELETE', null, headers, function (result) {
+      if (result.ok || result.isMissingMessage) {
+        done(true, '', {
+          statusCode: result.statusCode,
+          retryAfterMs: 0,
+          isRateLimited: false,
+          isMissingMessage: !!result.isMissingMessage,
+          discordCode: parseDiscordErrorCode(result.parsed)
+        });
+        return;
+      }
+
+      const details = {
+        statusCode: result.statusCode,
+        retryAfterMs: result.retryAfterMs,
+        isRateLimited: result.isRateLimited,
+        isMissingMessage: result.isMissingMessage,
+        discordCode: parseDiscordErrorCode(result.parsed)
+      };
+      const retryDelayMs = computeRetryDelayMs(details, attempt, STARTUP_PURGE_RETRY_DEFAULT_MS, STARTUP_PURGE_RETRY_MAX_MS);
+      const shouldRetry = retryDelayMs > 0 && attempt < STARTUP_PURGE_DELETE_MAX_ATTEMPTS;
+      if (shouldRetry && plugin.pluginHelper && typeof plugin.pluginHelper.requestNotifyAfterDelay === 'function') {
+        plugin.logger.logWarning('{Name}: Discord startup purge delete retry scheduled message_id={MessageId} attempt={Attempt} retry_ms={RetryMs}',
+          plugin.name,
+          String(messageId),
+          attempt + 1,
+          retryDelayMs);
+        plugin.pluginHelper.requestNotifyAfterDelay(retryDelayMs, function () {
+          deleteMessageWithRetry(plugin, messageId, attempt + 1, done);
+        });
+        return;
+      }
+
+      plugin.logger.logWarning('{Name}: Discord startup purge delete failed message_id={MessageId} error={Error}',
+        plugin.name,
+        String(messageId),
+        result.errorText || 'unknown discord delete error');
+      done(false, result.errorText || 'discord delete failed', details);
+    });
+  }
+
+  function purgeChannelMessagesByAuthor(plugin, authorId, done) {
+    const stats = {
+      scanned: 0,
+      matched: 0,
+      deleted: 0,
+      pages: 0,
+      rateLimited: false
+    };
+
+    function deleteMatchingMessages(messageIds, index, onDone) {
+      if (index >= messageIds.length) {
+        onDone();
+        return;
+      }
+
+      const messageId = String(messageIds[index] || '');
+      if (!messageId) {
+        deleteMatchingMessages(messageIds, index + 1, onDone);
+        return;
+      }
+
+      deleteMessageWithRetry(plugin, messageId, 1, function (ok, errorText, details) {
+        if (details && details.isRateLimited) stats.rateLimited = true;
+        if (ok) {
+          stats.deleted += 1;
+          deleteMatchingMessages(messageIds, index + 1, onDone);
+          return;
+        }
+
+        plugin.logger.logWarning('{Name}: Startup purge could not delete message_id={MessageId} error={Error}',
+          plugin.name,
+          messageId,
+          String(errorText || 'unknown startup purge delete error'));
+        deleteMatchingMessages(messageIds, index + 1, onDone);
+      });
+    }
+
+    function fetchPage(beforeMessageId, attemptNumber) {
+      const fetchAttempt = Math.max(1, Number(attemptNumber || 1));
+      listChannelMessages(plugin, beforeMessageId, function (ok, messages, errorText, details) {
+        if (!ok) {
+          if (details && details.isRateLimited) stats.rateLimited = true;
+          const retryDelayMs = computeRetryDelayMs(details, fetchAttempt, STARTUP_PURGE_RETRY_DEFAULT_MS, STARTUP_PURGE_RETRY_MAX_MS);
+          const shouldRetry = retryDelayMs > 0 && fetchAttempt < STARTUP_PURGE_FETCH_MAX_ATTEMPTS;
+          if (shouldRetry && plugin.pluginHelper && typeof plugin.pluginHelper.requestNotifyAfterDelay === 'function') {
+            plugin.logger.logWarning('{Name}: Discord startup purge list retry scheduled attempt={Attempt} retry_ms={RetryMs}',
+              plugin.name,
+              fetchAttempt + 1,
+              retryDelayMs);
+            plugin.pluginHelper.requestNotifyAfterDelay(retryDelayMs, function () {
+              fetchPage(beforeMessageId, fetchAttempt + 1);
+            });
+            return;
+          }
+
+          done(false, errorText || 'discord list messages failed', stats);
+          return;
+        }
+
+        stats.pages += 1;
+        stats.scanned += messages.length;
+
+        if (messages.length === 0) {
+          done(true, '', stats);
+          return;
+        }
+
+        const matchingIds = [];
+        for (let i = 0; i < messages.length; i++) {
+          const current = messages[i] || {};
+          const messageId = String(current.id || '').trim();
+          if (!messageId) continue;
+          const currentAuthorId = String(current.author && current.author.id ? current.author.id : '').trim();
+          if (currentAuthorId === String(authorId)) {
+            matchingIds.push(messageId);
+          }
+        }
+        stats.matched += matchingIds.length;
+
+        const oldest = messages[messages.length - 1] || {};
+        const nextBefore = String(oldest.id || '').trim();
+
+        deleteMatchingMessages(matchingIds, 0, function () {
+          if (!nextBefore) {
+            done(true, '', stats);
+            return;
+          }
+
+          fetchPage(nextBefore, 1);
+        });
+      });
+    }
+
+    fetchPage('', 1);
   }
 
   return {
@@ -357,6 +595,42 @@ export function createDiscordNotifier(config) {
           retryAfterMs: 0,
           isRateLimited: false,
           isMissingMessage: false
+        });
+      });
+    },
+
+    purgeStartupMessages: function (plugin, done) {
+      getCurrentBotUserId(plugin, function (ok, botUserId, errorText, details) {
+        if (!ok) {
+          done(false, errorText || 'failed to resolve bot identity', {
+            scanned: 0,
+            matched: 0,
+            deleted: 0,
+            pages: 0,
+            rateLimited: !!(details && details.isRateLimited)
+          });
+          return;
+        }
+
+        purgeChannelMessagesByAuthor(plugin, botUserId, function (purgeOk, purgeErrorText, stats) {
+          if (!purgeOk) {
+            done(false, purgeErrorText || 'startup purge failed', stats || {
+              scanned: 0,
+              matched: 0,
+              deleted: 0,
+              pages: 0,
+              rateLimited: false
+            });
+            return;
+          }
+
+          done(true, '', stats || {
+            scanned: 0,
+            matched: 0,
+            deleted: 0,
+            pages: 0,
+            rateLimited: false
+          });
         });
       });
     }

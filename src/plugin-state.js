@@ -15,7 +15,9 @@ export function createRuntimeState() {
     notifyDeleteInFlightByServer: {},
     globalNotifyLastAtMs: 0,
     globalNotifyDispatchInFlight: false,
-    missingNotifierWarned: false
+    missingNotifierWarned: false,
+    startupPurgeCompleted: false,
+    startupBootstrapStarted: false
   };
 }
 
