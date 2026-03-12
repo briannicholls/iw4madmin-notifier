@@ -30,7 +30,8 @@ const LEGACY_DEFAULT_ALERT_MESSAGES = [
 export const defaultConfig = {
   alerts: DEFAULT_ALERTS.map(copyAlert),
   discordBotToken: '',
-  discordChannelId: ''
+  discordChannelId: '',
+  discordRoleId: ''
 };
 
 function copyAlert(alert) {
@@ -99,7 +100,8 @@ export function sanitizeConfig(rawConfig) {
   return {
     alerts: sanitizeAlerts(source.alerts),
     discordBotToken: String(source.discordBotToken == null ? '' : source.discordBotToken).trim(),
-    discordChannelId: String(source.discordChannelId == null ? '' : source.discordChannelId).trim()
+    discordChannelId: String(source.discordChannelId == null ? '' : source.discordChannelId).trim(),
+    discordRoleId: String(source.discordRoleId == null ? '' : source.discordRoleId).trim()
   };
 }
 

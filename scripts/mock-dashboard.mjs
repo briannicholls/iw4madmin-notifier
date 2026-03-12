@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { DEFAULT_ALERTS_FOR_RENDERING, mapFilenameToSlug, MOCK_MAX_PLAYERS } from './mock-dashboard.shared.mjs';
+import { buildDashboardPayload } from '../src/dashboard-renderer.js';
 
-const MAX_PLAYERS = 18;
 const MAX_EMBEDS = 10;
 const BASE_THUMBNAIL_URL = 'https://iw4m.s3.us-east-2.amazonaws.com';
 
@@ -88,15 +89,21 @@ function buildMockSnapshots(serverCount) {
   for (let i = 0; i < serverCount; i++) {
     const map = MAPS[Math.floor(rand() * MAPS.length)];
     const mode = MODES[Math.floor(rand() * MODES.length)];
-    const playerCount = Math.floor(rand() * (MAX_PLAYERS + 1));
+    const playerCount = Math.floor(rand() * (MOCK_MAX_PLAYERS + 1));
     const serverNumber = String(i + 1).padStart(2, '0');
 
     snapshots.push({
       serverKey: 'server_' + serverNumber,
       serverName: 'BlackOpsPublic #' + serverNumber,
       playerCount: playerCount,
-      mapText: map.readable,
-      modeText: mode,
+      mapInfo: {
+        readable: map.readable,
+        slug: mapFilenameToSlug(map.file)
+      },
+      modeInfo: {
+        readable: mode,
+        slug: ''
+      },
       imageUrl: BASE_THUMBNAIL_URL + '/' + map.file
     });
   }
@@ -109,32 +116,13 @@ function buildMockSnapshots(serverCount) {
   return snapshots.slice(0, MAX_EMBEDS);
 }
 
-function statusColor(playerCount) {
-  if (playerCount >= 11) return 15158332;
-  if (playerCount >= 6) return 15844367;
-  if (playerCount >= 1) return 3066993;
-  return 3447003;
-}
-
 function buildPayload(serverCount) {
   const snapshots = buildMockSnapshots(serverCount);
-  const embeds = snapshots.map((snapshot) => {
-    return {
-      title: snapshot.serverName,
-      description:
-        '**Players:** ' + snapshot.playerCount + '/' + MAX_PLAYERS + '\n'
-        + '**Map:** ' + snapshot.mapText + '\n'
-        + '**Mode:** ' + snapshot.modeText,
-      color: statusColor(snapshot.playerCount),
-      thumbnail: { url: snapshot.imageUrl }
-    };
-  });
-
-  return {
-    content: '',
-    embeds,
-    allowed_mentions: { parse: [] }
-  };
+  const snapshotsByServer = {};
+  for (let i = 0; i < snapshots.length; i++) {
+    snapshotsByServer[snapshots[i].serverKey] = snapshots[i];
+  }
+  return buildDashboardPayload(DEFAULT_ALERTS_FOR_RENDERING, snapshotsByServer);
 }
 
 async function postToDiscord(payload) {

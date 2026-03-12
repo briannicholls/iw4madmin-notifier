@@ -1,6 +1,7 @@
 import { MAX_PLAYERS, thresholdListText } from './config.js';
 import { parseIntSafe } from './utils.js';
 import { handleThresholdCrossing, maybeDeleteNotifyForLowPopulation } from './threshold-notify.js';
+import { ensureServerPopulationState, saveServerPopulationState } from './plugin-state.js';
 
 function applyStartupRules(plugin, serverKey, serverName, playerCount, state) {
   const alerts = plugin.config.alerts || [];
@@ -50,15 +51,7 @@ export function evaluatePopulation(plugin, serverKey, serverName, playerCount, o
   if (alerts.length === 0) return;
 
   const meta = observationMeta || {};
-  let state = plugin.runtime.populationStateByServer[serverKey];
-
-  if (!state) {
-    state = {
-      initialized: false,
-      lastCount: null,
-      firedByThreshold: {}
-    };
-  }
+  const state = ensureServerPopulationState(plugin, serverKey);
 
   maybeDeleteNotifyForLowPopulation(plugin, serverKey, playerCount, meta.source || 'unknown');
 
@@ -74,7 +67,7 @@ export function evaluatePopulation(plugin, serverKey, serverName, playerCount, o
     applyStartupRules(plugin, serverKey, serverName, playerCount, state);
     state.initialized = true;
     state.lastCount = playerCount;
-    plugin.runtime.populationStateByServer[serverKey] = state;
+    saveServerPopulationState(plugin, serverKey, state);
     return;
   }
 
@@ -121,5 +114,5 @@ export function evaluatePopulation(plugin, serverKey, serverName, playerCount, o
   }
 
   state.lastCount = playerCount;
-  plugin.runtime.populationStateByServer[serverKey] = state;
+  saveServerPopulationState(plugin, serverKey, state);
 }

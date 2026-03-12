@@ -32,6 +32,7 @@ Config is stored under your script plugin entry key in the `config` object.
 | `alerts` | array | `[{threshold:1,...},{threshold:6,...},{threshold:11,...}]` | Threshold/message rules. Each rule is `{ "threshold": number, "message": string }`. |
 | `discordBotToken` | string | *(empty)* | Discord bot token used for channel message API calls. |
 | `discordChannelId` | string | *(empty)* | Discord channel id where status + notify messages are posted. |
+| `discordRoleId` | string | *(empty)* | Optional Discord role id to mention on notify messages. When unset, notify messages mention `@here`. |
 
 Example:
 
@@ -52,7 +53,8 @@ Example:
     }
   ],
   "discordBotToken": "BotTokenHere",
-  "discordChannelId": "123456789012345678"
+  "discordChannelId": "123456789012345678",
+  "discordRoleId": "987654321098765432"
 }
 ```
 
@@ -77,7 +79,7 @@ These placeholders are available in each alert `message`:
 - Notify cleanup: active notify message for a server is deleted whenever observed population is below `3` players (including enter/leave activity events).
 - Status dashboard shape: one message with up to `10` embeds (top 10 by current player count; ties are sorted by server key).
 - Status dashboard image size: each server card uses `embed.thumbnail` (compact) instead of full-width images.
-- Notify message format: one sentence with `@here` and your configured threshold message.
+- Notify message format: one sentence with either `<@&discordRoleId>` (when configured) or `@here`, plus your configured threshold message.
 
 ## Thumbnail Pipeline
 
@@ -137,7 +139,7 @@ Notes:
 
 ## Troubleshooting
 
-- Confirm bot permissions in the channel: `View Channel`, `Send Messages`, `Embed Links`, and `Mention @everyone, @here, and All Roles`.
+- Confirm bot permissions in the channel: `View Channel`, `Send Messages`, `Embed Links`, and mention permission for either `@everyone/@here` (fallback mode) or your configured role (`discordRoleId`).
 - Confirm `discordBotToken` and `discordChannelId` are both set.
 - Check IW4M logs for `Population Notifier` entries such as:
   - `Initial population snapshot...`

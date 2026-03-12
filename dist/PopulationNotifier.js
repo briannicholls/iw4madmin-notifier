@@ -147,7 +147,8 @@ var _b = (() => {
   var defaultConfig = {
     alerts: DEFAULT_ALERTS.map(copyAlert),
     discordBotToken: "",
-    discordChannelId: ""
+    discordChannelId: "",
+    discordRoleId: ""
   };
   function copyAlert(alert) {
     return {
@@ -202,7 +203,8 @@ var _b = (() => {
     return {
       alerts: sanitizeAlerts(source.alerts),
       discordBotToken: String(source.discordBotToken == null ? "" : source.discordBotToken).trim(),
-      discordChannelId: String(source.discordChannelId == null ? "" : source.discordChannelId).trim()
+      discordChannelId: String(source.discordChannelId == null ? "" : source.discordChannelId).trim(),
+      discordRoleId: String(source.discordRoleId == null ? "" : source.discordRoleId).trim()
     };
   }
   function thresholdListText(alerts) {
@@ -548,6 +550,9 @@ var _b = (() => {
     if (value >= 1e3) return Math.round(value);
     return Math.round(value * 1e3);
   }
+  function parseDiscordErrorCode(parsed) {
+    return parseDiscordCode(parsed);
+  }
   function isMissingMessageResponse(statusCode, parsed) {
     if (statusCode === 404) return true;
     return parseDiscordCode(parsed) === 10008;
@@ -558,6 +563,10 @@ var _b = (() => {
       return /rate\s*limited/i.test(parsed.message);
     }
     return false;
+  }
+  function isRetryableStatusCode(statusCode) {
+    if (!Number.isFinite(statusCode)) return false;
+    return statusCode === 429 || statusCode >= 500;
   }
   function tryParseJson(text) {
     const body = String(text == null ? "" : text).trim();
@@ -589,6 +598,20 @@ var _b = (() => {
     if (id) return true;
     if (!text || String(text).trim() === "") return true;
     return false;
+  }
+  function computeRetryDelayMs(details, attemptNumber, defaultDelayMs, maxDelayMs) {
+    const retryAfterMs = Number(details && details.retryAfterMs);
+    if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+      return Math.max(1e3, Math.min(maxDelayMs, Math.round(retryAfterMs)));
+    }
+    const statusCode = Number(details && details.statusCode);
+    const isRateLimited = !!(details && details.isRateLimited);
+    if (isRateLimited || isRetryableStatusCode(statusCode)) {
+      const attempt = Math.max(1, Number.isFinite(Number(attemptNumber)) ? Number(attemptNumber) : 1);
+      const baseDelay = Math.round(defaultDelayMs * attempt);
+      return Math.max(1e3, Math.min(maxDelayMs, baseDelay));
+    }
+    return 0;
   }
   function buildErrorText(statusCode, parsed, text) {
     if (parsed && typeof parsed.message === "string" && parsed.message) {
@@ -671,6 +694,12 @@ var _b = (() => {
     if (!botToken || !channelId) return null;
     const headers = createHeaders(botToken);
     const createUrl = "https://discord.com/api/v10/channels/" + channelId + "/messages";
+    const meUrl = "https://discord.com/api/v10/users/@me";
+    const channelMessagesUrl = "https://discord.com/api/v10/channels/" + channelId + "/messages";
+    const STARTUP_PURGE_FETCH_MAX_ATTEMPTS = 4;
+    const STARTUP_PURGE_DELETE_MAX_ATTEMPTS = 4;
+    const STARTUP_PURGE_RETRY_DEFAULT_MS = 5e3;
+    const STARTUP_PURGE_RETRY_MAX_MS = 6e4;
     function createMessage(plugin2, payload, meta, done) {
       requestJson(plugin2, createUrl, "POST", payload, headers, function(result) {
         if (!result.ok) {
@@ -709,6 +738,196 @@ var _b = (() => {
           isMissingMessage: false
         });
       });
+    }
+    function getCurrentBotUserId(plugin2, done) {
+      requestJson(plugin2, meUrl, "GET", null, headers, function(result) {
+        if (!result.ok) {
+          done(false, "", result.errorText || "failed to query bot identity", {
+            statusCode: result.statusCode,
+            retryAfterMs: result.retryAfterMs,
+            isRateLimited: result.isRateLimited,
+            isMissingMessage: false,
+            discordCode: parseDiscordErrorCode(result.parsed)
+          });
+          return;
+        }
+        const parsed = result.parsed || {};
+        const botUserId = String(parsed.id || "").trim();
+        if (!botUserId) {
+          done(false, "", "discord bot identity response missing id", {
+            statusCode: result.statusCode,
+            retryAfterMs: 0,
+            isRateLimited: false,
+            isMissingMessage: false,
+            discordCode: 0
+          });
+          return;
+        }
+        done(true, botUserId, "", {
+          statusCode: result.statusCode,
+          retryAfterMs: 0,
+          isRateLimited: false,
+          isMissingMessage: false,
+          discordCode: 0
+        });
+      });
+    }
+    function listChannelMessages(plugin2, beforeMessageId, done) {
+      let url = channelMessagesUrl + "?limit=100";
+      if (beforeMessageId) {
+        url += "&before=" + encodeURIComponent(String(beforeMessageId));
+      }
+      requestJson(plugin2, url, "GET", null, headers, function(result) {
+        if (!result.ok) {
+          done(false, [], result.errorText || "discord list messages failed", {
+            statusCode: result.statusCode,
+            retryAfterMs: result.retryAfterMs,
+            isRateLimited: result.isRateLimited,
+            isMissingMessage: false,
+            discordCode: parseDiscordErrorCode(result.parsed)
+          });
+          return;
+        }
+        const messages = Array.isArray(result.parsed) ? result.parsed : [];
+        done(true, messages, "", {
+          statusCode: result.statusCode,
+          retryAfterMs: 0,
+          isRateLimited: false,
+          isMissingMessage: false,
+          discordCode: 0
+        });
+      });
+    }
+    function deleteMessageWithRetry(plugin2, messageId, attemptNumber, done) {
+      const attempt = Math.max(1, Number(attemptNumber || 1));
+      const url = createUrl + "/" + String(messageId);
+      requestJson(plugin2, url, "DELETE", null, headers, function(result) {
+        if (result.ok || result.isMissingMessage) {
+          done(true, "", {
+            statusCode: result.statusCode,
+            retryAfterMs: 0,
+            isRateLimited: false,
+            isMissingMessage: !!result.isMissingMessage,
+            discordCode: parseDiscordErrorCode(result.parsed)
+          });
+          return;
+        }
+        const details = {
+          statusCode: result.statusCode,
+          retryAfterMs: result.retryAfterMs,
+          isRateLimited: result.isRateLimited,
+          isMissingMessage: result.isMissingMessage,
+          discordCode: parseDiscordErrorCode(result.parsed)
+        };
+        const retryDelayMs = computeRetryDelayMs(details, attempt, STARTUP_PURGE_RETRY_DEFAULT_MS, STARTUP_PURGE_RETRY_MAX_MS);
+        const shouldRetry = retryDelayMs > 0 && attempt < STARTUP_PURGE_DELETE_MAX_ATTEMPTS;
+        if (shouldRetry && plugin2.pluginHelper && typeof plugin2.pluginHelper.requestNotifyAfterDelay === "function") {
+          plugin2.logger.logWarning(
+            "{Name}: Discord startup purge delete retry scheduled message_id={MessageId} attempt={Attempt} retry_ms={RetryMs}",
+            plugin2.name,
+            String(messageId),
+            attempt + 1,
+            retryDelayMs
+          );
+          plugin2.pluginHelper.requestNotifyAfterDelay(retryDelayMs, function() {
+            deleteMessageWithRetry(plugin2, messageId, attempt + 1, done);
+          });
+          return;
+        }
+        plugin2.logger.logWarning(
+          "{Name}: Discord startup purge delete failed message_id={MessageId} error={Error}",
+          plugin2.name,
+          String(messageId),
+          result.errorText || "unknown discord delete error"
+        );
+        done(false, result.errorText || "discord delete failed", details);
+      });
+    }
+    function purgeChannelMessagesByAuthor(plugin2, authorId, done) {
+      const stats = {
+        scanned: 0,
+        matched: 0,
+        deleted: 0,
+        pages: 0,
+        rateLimited: false
+      };
+      function deleteMatchingMessages(messageIds, index, onDone) {
+        if (index >= messageIds.length) {
+          onDone();
+          return;
+        }
+        const messageId = String(messageIds[index] || "");
+        if (!messageId) {
+          deleteMatchingMessages(messageIds, index + 1, onDone);
+          return;
+        }
+        deleteMessageWithRetry(plugin2, messageId, 1, function(ok, errorText, details) {
+          if (details && details.isRateLimited) stats.rateLimited = true;
+          if (ok) {
+            stats.deleted += 1;
+            deleteMatchingMessages(messageIds, index + 1, onDone);
+            return;
+          }
+          plugin2.logger.logWarning(
+            "{Name}: Startup purge could not delete message_id={MessageId} error={Error}",
+            plugin2.name,
+            messageId,
+            String(errorText || "unknown startup purge delete error")
+          );
+          deleteMatchingMessages(messageIds, index + 1, onDone);
+        });
+      }
+      function fetchPage(beforeMessageId, attemptNumber) {
+        const fetchAttempt = Math.max(1, Number(attemptNumber || 1));
+        listChannelMessages(plugin2, beforeMessageId, function(ok, messages, errorText, details) {
+          if (!ok) {
+            if (details && details.isRateLimited) stats.rateLimited = true;
+            const retryDelayMs = computeRetryDelayMs(details, fetchAttempt, STARTUP_PURGE_RETRY_DEFAULT_MS, STARTUP_PURGE_RETRY_MAX_MS);
+            const shouldRetry = retryDelayMs > 0 && fetchAttempt < STARTUP_PURGE_FETCH_MAX_ATTEMPTS;
+            if (shouldRetry && plugin2.pluginHelper && typeof plugin2.pluginHelper.requestNotifyAfterDelay === "function") {
+              plugin2.logger.logWarning(
+                "{Name}: Discord startup purge list retry scheduled attempt={Attempt} retry_ms={RetryMs}",
+                plugin2.name,
+                fetchAttempt + 1,
+                retryDelayMs
+              );
+              plugin2.pluginHelper.requestNotifyAfterDelay(retryDelayMs, function() {
+                fetchPage(beforeMessageId, fetchAttempt + 1);
+              });
+              return;
+            }
+            done(false, errorText || "discord list messages failed", stats);
+            return;
+          }
+          stats.pages += 1;
+          stats.scanned += messages.length;
+          if (messages.length === 0) {
+            done(true, "", stats);
+            return;
+          }
+          const matchingIds = [];
+          for (let i = 0; i < messages.length; i++) {
+            const current = messages[i] || {};
+            const messageId = String(current.id || "").trim();
+            if (!messageId) continue;
+            const currentAuthorId = String(current.author && current.author.id ? current.author.id : "").trim();
+            if (currentAuthorId === String(authorId)) {
+              matchingIds.push(messageId);
+            }
+          }
+          stats.matched += matchingIds.length;
+          const oldest = messages[messages.length - 1] || {};
+          const nextBefore = String(oldest.id || "").trim();
+          deleteMatchingMessages(matchingIds, 0, function() {
+            if (!nextBefore) {
+              done(true, "", stats);
+              return;
+            }
+            fetchPage(nextBefore, 1);
+          });
+        });
+      }
+      fetchPage("", 1);
     }
     return {
       name: "discord",
@@ -832,6 +1051,39 @@ var _b = (() => {
             isMissingMessage: false
           });
         });
+      },
+      purgeStartupMessages: function(plugin2, done) {
+        getCurrentBotUserId(plugin2, function(ok, botUserId, errorText, details) {
+          if (!ok) {
+            done(false, errorText || "failed to resolve bot identity", {
+              scanned: 0,
+              matched: 0,
+              deleted: 0,
+              pages: 0,
+              rateLimited: !!(details && details.isRateLimited)
+            });
+            return;
+          }
+          purgeChannelMessagesByAuthor(plugin2, botUserId, function(purgeOk, purgeErrorText, stats) {
+            if (!purgeOk) {
+              done(false, purgeErrorText || "startup purge failed", stats || {
+                scanned: 0,
+                matched: 0,
+                deleted: 0,
+                pages: 0,
+                rateLimited: false
+              });
+              return;
+            }
+            done(true, "", stats || {
+              scanned: 0,
+              matched: 0,
+              deleted: 0,
+              pages: 0,
+              rateLimited: false
+            });
+          });
+        });
       }
     };
   }
@@ -861,6 +1113,18 @@ var _b = (() => {
         }
         const primary = notifiers[0];
         primary.deleteMessage(plugin2, messageId, meta || {}, done);
+      },
+      purgeStartupMessages: function(plugin2, done) {
+        if (notifiers.length === 0) {
+          done(true, "", { scanned: 0, matched: 0, deleted: 0, pages: 0, rateLimited: false });
+          return;
+        }
+        const primary = notifiers[0];
+        if (typeof primary.purgeStartupMessages !== "function") {
+          done(true, "", { scanned: 0, matched: 0, deleted: 0, pages: 0, rateLimited: false });
+          return;
+        }
+        primary.purgeStartupMessages(plugin2, done);
       }
     };
   }
@@ -1003,14 +1267,14 @@ var _b = (() => {
     return base + "/" + fileName;
   }
 
-  // src/status-channel.js
+  // src/dashboard-renderer.js
   var MAX_DASHBOARD_EMBEDS = 10;
-  function statusColor(plugin2, playerCount) {
+  function statusColorFromPlayerCount(alerts, playerCount) {
     const count = parseIntSafe(playerCount, 0);
-    const alerts = plugin2.config && plugin2.config.alerts ? plugin2.config.alerts : [];
+    const list = Array.isArray(alerts) ? alerts : [];
     let highestThreshold = 0;
-    for (let i = 0; i < alerts.length; i++) {
-      const threshold = parseIntSafe(alerts[i].threshold, 0);
+    for (let i = 0; i < list.length; i++) {
+      const threshold = parseIntSafe(list[i] && list[i].threshold, 0);
       if (count >= threshold && threshold > highestThreshold) highestThreshold = threshold;
     }
     if (highestThreshold >= 11) return 15158332;
@@ -1031,35 +1295,35 @@ var _b = (() => {
     });
     return keys;
   }
-  function buildServerEmbed(plugin2, snapshot) {
+  function buildServerEmbed(alerts, snapshot) {
     const serverName = String(snapshot && snapshot.serverName ? snapshot.serverName : "(unknown server)");
     const playerCount = getSnapshotCount(snapshot);
     const mapInfo = snapshot && snapshot.mapInfo ? snapshot.mapInfo : null;
     const modeInfo = snapshot && snapshot.modeInfo ? snapshot.modeInfo : null;
-    const mapReadable = pickCleanString([mapInfo && mapInfo.readable]);
+    const mapReadable = pickCleanString([mapInfo && mapInfo.readable, snapshot && snapshot.mapText]);
     const mapSlug = pickCleanString([mapInfo && mapInfo.slug]);
-    const modeReadable = pickCleanString([modeInfo && modeInfo.readable]);
+    const modeReadable = pickCleanString([modeInfo && modeInfo.readable, snapshot && snapshot.modeText]);
     const mapText = mapReadable || "unknown";
     const modeText = modeReadable || "unknown";
-    const imageUrl = resolveT6ThumbnailUrl(mapSlug, mapReadable);
+    const imageUrl = pickCleanString([snapshot && snapshot.imageUrl]) || resolveT6ThumbnailUrl(mapSlug, mapReadable);
     const embed = {
       title: serverName,
       description: "**Players:** " + playerCount + "/" + MAX_PLAYERS + "\n**Map:** " + mapText + "\n**Mode:** " + modeText,
-      color: statusColor(plugin2, playerCount)
+      color: statusColorFromPlayerCount(alerts, playerCount)
     };
     if (imageUrl) {
       embed.thumbnail = { url: imageUrl };
     }
     return embed;
   }
-  function buildStatusPayload(plugin2, statusSnapshotByServer) {
+  function buildDashboardPayload(alerts, statusSnapshotByServer) {
     const serverKeys = sortedServerKeysByPopulation(statusSnapshotByServer).slice(0, MAX_DASHBOARD_EMBEDS);
     const embeds = [];
     for (let i = 0; i < serverKeys.length; i++) {
       const serverKey = serverKeys[i];
       const snapshot = statusSnapshotByServer[serverKey];
       if (!snapshot) continue;
-      embeds.push(buildServerEmbed(plugin2, snapshot));
+      embeds.push(buildServerEmbed(alerts, snapshot));
     }
     if (embeds.length === 0) {
       embeds.push({
@@ -1073,6 +1337,12 @@ var _b = (() => {
       embeds,
       allowed_mentions: { parse: [] }
     };
+  }
+
+  // src/status-channel.js
+  function buildStatusPayload(plugin2, statusSnapshotByServer) {
+    const alerts = plugin2.config && Array.isArray(plugin2.config.alerts) ? plugin2.config.alerts : [];
+    return buildDashboardPayload(alerts, statusSnapshotByServer);
   }
   function ensureStatusSyncState(plugin2) {
     let sync = plugin2.runtime.statusDashboardSync;
@@ -1157,18 +1427,36 @@ var _b = (() => {
     dispatchStatusUpsert(plugin2, update);
   }
 
-  // src/threshold-notify.js
-  function canSendGlobalNotify(plugin2) {
-    const nowMs = Date.now();
-    const lastAtMs = parseIntSafe(plugin2.runtime.globalNotifyLastAtMs, 0);
-    if (lastAtMs <= 0) {
-      return {
-        allowed: true,
-        remainingMs: 0
-      };
+  // src/notify-policy.js
+  function evaluateNotifyPolicy(input) {
+    const args = input || {};
+    if (!args.hasNotifier) {
+      return { action: "suppress", reason: "missing_notifier", remainingMs: 0 };
     }
-    const elapsedMs = nowMs - lastAtMs;
+    if (args.inFlight) {
+      return { action: "suppress", reason: "in_flight", remainingMs: 0 };
+    }
+    const remainingMs = parseIntSafe(args.cooldownRemainingMs, 0);
+    if (remainingMs > 0) {
+      return { action: "suppress", reason: "cooldown", remainingMs };
+    }
+    return { action: "send", reason: "allowed", remainingMs: 0 };
+  }
+  function remainingGlobalCooldownMs(lastAtMs, nowMs) {
+    const last = parseIntSafe(lastAtMs, 0);
+    if (last <= 0) return 0;
+    const elapsedMs = parseIntSafe(nowMs, Date.now()) - last;
     const remainingMs = GLOBAL_NOTIFY_COOLDOWN_MS - elapsedMs;
+    return remainingMs > 0 ? remainingMs : 0;
+  }
+
+  // src/threshold-notify.js
+  var NOTIFY_SEND_MAX_ATTEMPTS = 3;
+  var NOTIFY_DELETE_MAX_ATTEMPTS = 3;
+  var DEFAULT_NOTIFY_RETRY_MS = 5e3;
+  var MAX_NOTIFY_RETRY_MS = 6e4;
+  function canSendGlobalNotify(plugin2) {
+    const remainingMs = remainingGlobalCooldownMs(plugin2.runtime.globalNotifyLastAtMs, Date.now());
     if (remainingMs <= 0) {
       return {
         allowed: true,
@@ -1206,21 +1494,9 @@ var _b = (() => {
       playerCount,
       String(source || "unknown")
     );
-    plugin2.dispatcher.deleteMessage(plugin2, messageId, { type: "notify", serverKey }, (ok, errorText) => {
-      plugin2.runtime.notifyDeleteInFlightByServer[serverKey] = false;
-      if (!ok) {
-        plugin2.logger.logWarning(
-          "{Name}: Failed to delete active notify message for {Server} - {Error}",
-          plugin2.name,
-          serverKey,
-          String(errorText || "unknown delete error")
-        );
-        return;
-      }
-      delete plugin2.runtime.notifyMessageIdByServer[serverKey];
-    });
+    dispatchNotifyDeleteWithRetry(plugin2, serverKey, messageId, source, 1);
   }
-  function buildNotifyPayload(alert, serverKey, serverName, playerCount) {
+  function buildNotifyPayload(plugin2, alert, serverKey, serverName, playerCount) {
     const threshold = parseIntSafe(alert.threshold, 0);
     const context = buildMessageContext(serverName, serverKey, playerCount, threshold);
     let sentence = formatPopulationMessage(alert.message, context);
@@ -1231,39 +1507,73 @@ var _b = (() => {
     if (!/[.!?]$/.test(sentence)) {
       sentence += ".";
     }
-    const content = NOTIFY_MENTION_PREFIX + " " + sentence;
+    const mentionData = buildNotifyMentionData(plugin2);
+    const content = mentionData.prefix + " " + sentence;
     return {
       content,
-      allowed_mentions: {
+      allowed_mentions: mentionData.allowedMentions
+    };
+  }
+  function buildNotifyMentionData(plugin2) {
+    const roleId = String(plugin2 && plugin2.config && plugin2.config.discordRoleId ? plugin2.config.discordRoleId : "").trim();
+    if (roleId) {
+      return {
+        prefix: "<@&" + roleId + ">",
+        allowedMentions: {
+          parse: [],
+          roles: [roleId]
+        }
+      };
+    }
+    return {
+      prefix: NOTIFY_MENTION_PREFIX,
+      allowedMentions: {
         parse: ["everyone"]
       }
     };
   }
-  function sendNotifyMessage(plugin2, alert, serverKey, serverName, playerCount, isStartup, source, done) {
-    const payload = buildNotifyPayload(alert, serverKey, serverName, playerCount);
+  function sendNotifyMessage(plugin2, alert, serverKey, serverName, playerCount, isStartup, source, done, attempt) {
+    const payload = buildNotifyPayload(plugin2, alert, serverKey, serverName, playerCount);
     const existingMessageId = plugin2.runtime.notifyMessageIdByServer[serverKey] || "";
+    const attemptNumber = parseIntSafe(attempt, 1);
     plugin2.logger.logInformation(
-      "{Name}: Dispatching notify message server={Server} threshold={Threshold} startup={Startup} source={Source} existing_message_id={ExistingId}",
+      "{Name}: Dispatching notify message server={Server} threshold={Threshold} startup={Startup} source={Source} existing_message_id={ExistingId} attempt={Attempt}",
       plugin2.name,
       serverKey,
       parseIntSafe(alert.threshold, 0),
       isStartup === true ? "yes" : "no",
       String(source || "unknown"),
-      existingMessageId || "(none)"
+      existingMessageId || "(none)",
+      attemptNumber
     );
     plugin2.dispatcher.upsertMessage(
       plugin2,
       existingMessageId,
       payload,
       { type: "notify", serverKey },
-      (ok, messageId, errorText) => {
+      (ok, messageId, errorText, details) => {
         if (!ok) {
+          const retryDelayMs = computeNotifyRetryDelayMs(details, attemptNumber);
+          const shouldRetry = retryDelayMs > 0 && attemptNumber < NOTIFY_SEND_MAX_ATTEMPTS;
           plugin2.logger.logWarning(
             "{Name}: Failed to dispatch notify message for {Server} - {Error}",
             plugin2.name,
             serverKey,
             String(errorText || "unknown notify error")
           );
+          if (shouldRetry) {
+            plugin2.logger.logInformation(
+              "{Name}: Scheduling notify retry server={Server} attempt={Attempt} retry_ms={RetryMs}",
+              plugin2.name,
+              serverKey,
+              attemptNumber + 1,
+              retryDelayMs
+            );
+            scheduleAfterDelay(plugin2, retryDelayMs, function() {
+              sendNotifyMessage(plugin2, alert, serverKey, serverName, playerCount, isStartup, source, done, attemptNumber + 1);
+            });
+            return;
+          }
           if (typeof done === "function") done(false);
           return;
         }
@@ -1282,41 +1592,167 @@ var _b = (() => {
     );
   }
   function handleThresholdCrossing(plugin2, alert, serverKey, serverName, playerCount, isStartup, source) {
-    if (!plugin2.dispatcher || plugin2.dispatcher.count === 0) {
-      if (!plugin2.runtime.missingNotifierWarned) {
-        plugin2.logger.logWarning("{Name}: Alert suppressed because no notifier destination is configured.", plugin2.name);
-        plugin2.runtime.missingNotifierWarned = true;
+    const hasNotifier = !!(plugin2.dispatcher && plugin2.dispatcher.count > 0);
+    const cooldown = canSendGlobalNotify(plugin2);
+    const policy = evaluateNotifyPolicy({
+      hasNotifier,
+      inFlight: plugin2.runtime.globalNotifyDispatchInFlight === true,
+      cooldownRemainingMs: cooldown.remainingMs
+    });
+    if (policy.action !== "send") {
+      if (policy.reason === "missing_notifier") {
+        if (!plugin2.runtime.missingNotifierWarned) {
+          plugin2.logger.logWarning("{Name}: Alert suppressed because no notifier destination is configured.", plugin2.name);
+          plugin2.runtime.missingNotifierWarned = true;
+        }
+        return;
+      }
+      if (policy.reason === "in_flight") {
+        plugin2.logger.logInformation(
+          "{Name}: Notify suppressed because another notify dispatch is currently in-flight server={Server} threshold={Threshold} source={Source}",
+          plugin2.name,
+          serverKey,
+          parseIntSafe(alert.threshold, 0),
+          String(source || "unknown")
+        );
+        return;
+      }
+      if (policy.reason === "cooldown") {
+        const remainingMinutes = Math.ceil(policy.remainingMs / 6e4);
+        plugin2.logger.logInformation(
+          "{Name}: Notify suppressed by global cooldown server={Server} threshold={Threshold} remaining_minutes={Remaining} source={Source}",
+          plugin2.name,
+          serverKey,
+          parseIntSafe(alert.threshold, 0),
+          remainingMinutes,
+          String(source || "unknown")
+        );
       }
       return;
     }
-    if (plugin2.runtime.globalNotifyDispatchInFlight) {
-      plugin2.logger.logInformation(
-        "{Name}: Notify suppressed because another notify dispatch is currently in-flight server={Server} threshold={Threshold} source={Source}",
-        plugin2.name,
-        serverKey,
-        parseIntSafe(alert.threshold, 0),
-        String(source || "unknown")
-      );
-      return;
-    }
-    const cooldown = canSendGlobalNotify(plugin2);
-    if (!cooldown.allowed) {
-      const remainingMinutes = Math.ceil(cooldown.remainingMs / 6e4);
-      plugin2.logger.logInformation(
-        "{Name}: Notify suppressed by global cooldown server={Server} threshold={Threshold} remaining_minutes={Remaining} source={Source}",
-        plugin2.name,
-        serverKey,
-        parseIntSafe(alert.threshold, 0),
-        remainingMinutes,
-        String(source || "unknown")
-      );
-      return;
-    }
     plugin2.runtime.globalNotifyDispatchInFlight = true;
-    setGlobalNotifyNow(plugin2);
-    sendNotifyMessage(plugin2, alert, serverKey, serverName, playerCount, isStartup, source, () => {
+    sendNotifyMessage(plugin2, alert, serverKey, serverName, playerCount, isStartup, source, (ok) => {
+      if (ok) {
+        setGlobalNotifyNow(plugin2);
+      }
       plugin2.runtime.globalNotifyDispatchInFlight = false;
+    }, 1);
+  }
+  function computeNotifyRetryDelayMs(details, attemptNumber) {
+    const retryAfterMs = parseIntSafe(details && details.retryAfterMs, 0);
+    if (retryAfterMs > 0) {
+      return Math.max(1e3, Math.min(MAX_NOTIFY_RETRY_MS, retryAfterMs));
+    }
+    const statusCode = parseIntSafe(details && details.statusCode, 0);
+    const isRateLimited = !!(details && details.isRateLimited);
+    if (isRateLimited || statusCode >= 500) {
+      const attempt = Math.max(1, parseIntSafe(attemptNumber, 1));
+      const backoffMs = DEFAULT_NOTIFY_RETRY_MS * attempt;
+      return Math.max(1e3, Math.min(MAX_NOTIFY_RETRY_MS, backoffMs));
+    }
+    return 0;
+  }
+  function scheduleAfterDelay(plugin2, delayMs, callback) {
+    if (plugin2.pluginHelper && typeof plugin2.pluginHelper.requestNotifyAfterDelay === "function") {
+      plugin2.pluginHelper.requestNotifyAfterDelay(delayMs, callback);
+      return true;
+    }
+    return false;
+  }
+  function dispatchNotifyDeleteWithRetry(plugin2, serverKey, messageId, source, attemptNumber) {
+    plugin2.dispatcher.deleteMessage(plugin2, messageId, { type: "notify", serverKey }, (ok, errorText, details) => {
+      if (ok) {
+        plugin2.runtime.notifyDeleteInFlightByServer[serverKey] = false;
+        delete plugin2.runtime.notifyMessageIdByServer[serverKey];
+        return;
+      }
+      const retryDelayMs = computeNotifyRetryDelayMs(details, attemptNumber);
+      const shouldRetry = retryDelayMs > 0 && attemptNumber < NOTIFY_DELETE_MAX_ATTEMPTS;
+      plugin2.logger.logWarning(
+        "{Name}: Failed to delete active notify message for {Server} - {Error}",
+        plugin2.name,
+        serverKey,
+        String(errorText || "unknown delete error")
+      );
+      if (shouldRetry && scheduleAfterDelay(plugin2, retryDelayMs, function() {
+        dispatchNotifyDeleteWithRetry(plugin2, serverKey, messageId, source, attemptNumber + 1);
+      })) {
+        plugin2.logger.logInformation(
+          "{Name}: Scheduling notify-delete retry server={Server} attempt={Attempt} retry_ms={RetryMs} source={Source}",
+          plugin2.name,
+          serverKey,
+          attemptNumber + 1,
+          retryDelayMs,
+          String(source || "unknown")
+        );
+        return;
+      }
+      plugin2.runtime.notifyDeleteInFlightByServer[serverKey] = false;
     });
+  }
+
+  // src/plugin-state.js
+  function createRuntimeState() {
+    return {
+      serverByKey: {},
+      activeNetworkIdsByServer: {},
+      populationStateByServer: {},
+      mapInfoByServer: {},
+      modeInfoByServer: {},
+      serverProbeLoggedByServer: {},
+      statusSnapshotByServer: {},
+      statusDashboardMessageId: "",
+      statusDashboardSync: null,
+      statusDashboardRetryAtMs: 0,
+      notifyMessageIdByServer: {},
+      statusDashboardFingerprint: "",
+      notifyDeleteInFlightByServer: {},
+      globalNotifyLastAtMs: 0,
+      globalNotifyDispatchInFlight: false,
+      missingNotifierWarned: false,
+      startupPurgeCompleted: false,
+      startupBootstrapStarted: false
+    };
+  }
+  function ensureServerPopulationState(plugin2, serverKey) {
+    let state = plugin2.runtime.populationStateByServer[serverKey];
+    if (!state) {
+      state = {
+        initialized: false,
+        lastCount: null,
+        firedByThreshold: {}
+      };
+      plugin2.runtime.populationStateByServer[serverKey] = state;
+    }
+    return state;
+  }
+  function saveServerPopulationState(plugin2, serverKey, state) {
+    plugin2.runtime.populationStateByServer[serverKey] = state;
+  }
+  function setKnownServer(plugin2, serverKey, server) {
+    plugin2.runtime.serverByKey[serverKey] = server;
+  }
+  function setServerMetadata(plugin2, serverKey, mapInfo, modeInfo) {
+    plugin2.runtime.mapInfoByServer[serverKey] = mapInfo;
+    plugin2.runtime.modeInfoByServer[serverKey] = modeInfo;
+  }
+  function setStatusSnapshot(plugin2, serverKey, snapshot) {
+    plugin2.runtime.statusSnapshotByServer[serverKey] = snapshot;
+  }
+  function clearStatusSnapshots(plugin2) {
+    plugin2.runtime.statusSnapshotByServer = {};
+  }
+  function ensureActiveNetworkIds(plugin2, serverKey) {
+    if (!plugin2.runtime.activeNetworkIdsByServer[serverKey]) {
+      plugin2.runtime.activeNetworkIdsByServer[serverKey] = {};
+    }
+    return plugin2.runtime.activeNetworkIdsByServer[serverKey];
+  }
+  function wasServerProbeLogged(plugin2, serverKey) {
+    return !!plugin2.runtime.serverProbeLoggedByServer[serverKey];
+  }
+  function markServerProbeLogged(plugin2, serverKey) {
+    plugin2.runtime.serverProbeLoggedByServer[serverKey] = true;
   }
 
   // src/population-engine.js
@@ -1366,14 +1802,7 @@ var _b = (() => {
     const alerts = plugin2.config.alerts || [];
     if (alerts.length === 0) return;
     const meta = observationMeta || {};
-    let state = plugin2.runtime.populationStateByServer[serverKey];
-    if (!state) {
-      state = {
-        initialized: false,
-        lastCount: null,
-        firedByThreshold: {}
-      };
-    }
+    const state = ensureServerPopulationState(plugin2, serverKey);
     maybeDeleteNotifyForLowPopulation(plugin2, serverKey, playerCount, meta.source || "unknown");
     if (!state.initialized) {
       plugin2.logger.logInformation(
@@ -1388,7 +1817,7 @@ var _b = (() => {
       applyStartupRules(plugin2, serverKey, serverName, playerCount, state);
       state.initialized = true;
       state.lastCount = playerCount;
-      plugin2.runtime.populationStateByServer[serverKey] = state;
+      saveServerPopulationState(plugin2, serverKey, state);
       return;
     }
     const previousCount = parseIntSafe(state.lastCount, playerCount);
@@ -1435,7 +1864,33 @@ var _b = (() => {
       }
     }
     state.lastCount = playerCount;
-    plugin2.runtime.populationStateByServer[serverKey] = state;
+    saveServerPopulationState(plugin2, serverKey, state);
+  }
+
+  // src/observation-ingress.js
+  function normalizeObservationFromEvent(eventObj, options) {
+    const opts = options || {};
+    const server = extractServerFromEvent(eventObj);
+    return {
+      server,
+      client: extractClientFromEvent(eventObj),
+      isDisconnect: opts.isDisconnect === true,
+      source: String(opts.source || "unknown"),
+      mapHint: extractMapInfoFromEvent(eventObj),
+      modeHint: extractModeInfoFromEvent(eventObj),
+      isBootstrap: opts.isBootstrap === true
+    };
+  }
+  function normalizeBootstrapObservation(server) {
+    return {
+      server,
+      client: null,
+      isDisconnect: false,
+      source: "bootstrap_manager",
+      mapHint: extractMapInfoFromServer(server),
+      modeHint: extractModeInfoFromServer(server),
+      isBootstrap: true
+    };
   }
 
   // src/index.js
@@ -1457,24 +1912,7 @@ var _b = (() => {
     pluginHelper: null,
     config: sanitizeConfig(defaultConfig),
     dispatcher: null,
-    runtime: {
-      serverByKey: {},
-      activeNetworkIdsByServer: {},
-      populationStateByServer: {},
-      mapInfoByServer: {},
-      modeInfoByServer: {},
-      serverProbeLoggedByServer: {},
-      statusSnapshotByServer: {},
-      statusDashboardMessageId: "",
-      statusDashboardSync: null,
-      statusDashboardRetryAtMs: 0,
-      notifyMessageIdByServer: {},
-      statusDashboardFingerprint: "",
-      notifyDeleteInFlightByServer: {},
-      globalNotifyLastAtMs: 0,
-      globalNotifyDispatchInFlight: false,
-      missingNotifierWarned: false
-    },
+    runtime: createRuntimeState(),
     onLoad: function(serviceResolver, configWrapper, pluginHelper) {
       this.configWrapper = configWrapper;
       this.pluginHelper = pluginHelper;
@@ -1527,8 +1965,7 @@ var _b = (() => {
         this.logger.logWarning("{Name}: No notifier destinations configured. Add discordBotToken and discordChannelId to enable alerts.", this.name);
         this.runtime.missingNotifierWarned = true;
       }
-      this.bootstrapKnownServers();
-      this.scheduleDelayedBootstrap();
+      this.runStartupPurgeThenBootstrap();
     },
     refreshNotifiers: function() {
       this.dispatcher = createNotificationDispatcher(this.config);
@@ -1544,6 +1981,48 @@ var _b = (() => {
         this.bootstrapKnownServers();
       });
     },
+    startBootstrapFlow: function() {
+      if (this.runtime.startupBootstrapStarted) return;
+      this.runtime.startupBootstrapStarted = true;
+      this.bootstrapKnownServers();
+      this.scheduleDelayedBootstrap();
+    },
+    runStartupPurgeThenBootstrap: function() {
+      if (this.runtime.startupPurgeCompleted) {
+        this.startBootstrapFlow();
+        return;
+      }
+      this.runtime.startupPurgeCompleted = true;
+      if (!this.dispatcher || typeof this.dispatcher.purgeStartupMessages !== "function" || this.dispatcher.count === 0) {
+        this.startBootstrapFlow();
+        return;
+      }
+      this.logger.logInformation("{Name}: Startup purge scanning prior bot-authored Discord messages", this.name);
+      this.dispatcher.purgeStartupMessages(this, (ok, errorText, stats) => {
+        const summary = stats || { scanned: 0, matched: 0, deleted: 0, pages: 0, rateLimited: false };
+        if (ok) {
+          this.logger.logInformation(
+            "{Name}: Startup purge complete scanned={Scanned} matched={Matched} deleted={Deleted} pages={Pages} rate_limited={RateLimited}",
+            this.name,
+            parseIntSafe(summary.scanned, 0),
+            parseIntSafe(summary.matched, 0),
+            parseIntSafe(summary.deleted, 0),
+            parseIntSafe(summary.pages, 0),
+            summary.rateLimited ? "yes" : "no"
+          );
+        } else {
+          this.logger.logWarning(
+            "{Name}: Startup purge failed - {Error} (scanned={Scanned} matched={Matched} deleted={Deleted})",
+            this.name,
+            String(errorText || "unknown startup purge error"),
+            parseIntSafe(summary.scanned, 0),
+            parseIntSafe(summary.matched, 0),
+            parseIntSafe(summary.deleted, 0)
+          );
+        }
+        this.startBootstrapFlow();
+      });
+    },
     bootstrapKnownServers: function() {
       const servers = collectServersFromManager(this.manager);
       this.logger.logInformation(
@@ -1552,21 +2031,21 @@ var _b = (() => {
         servers.length
       );
       for (let i = 0; i < servers.length; i++) {
-        const server = servers[i];
+        const observation = normalizeBootstrapObservation(servers[i]);
         this.observeServerPopulation(
-          server,
-          null,
-          false,
-          "bootstrap_manager",
-          extractMapInfoFromServer(server),
-          extractModeInfoFromServer(server),
-          true
+          observation.server,
+          observation.client,
+          observation.isDisconnect,
+          observation.source,
+          observation.mapHint,
+          observation.modeHint,
+          observation.isBootstrap
         );
       }
     },
     refreshStatusMessages: function() {
       const keys = Object.keys(this.runtime.populationStateByServer || {});
-      this.runtime.statusSnapshotByServer = {};
+      clearStatusSnapshots(this);
       for (let i = 0; i < keys.length; i++) {
         const serverKey = keys[i];
         const server = this.runtime.serverByKey[serverKey];
@@ -1576,75 +2055,93 @@ var _b = (() => {
         const serverName = cleanName(server.serverName || server.ServerName || server.hostname || server.Hostname || serverKey);
         const mapInfo = mergeNamedInfo(this.runtime.mapInfoByServer[serverKey], extractMapInfoFromServer(server));
         const modeInfo = mergeNamedInfo(this.runtime.modeInfoByServer[serverKey], extractModeInfoFromServer(server));
-        this.runtime.statusSnapshotByServer[serverKey] = {
+        setStatusSnapshot(this, serverKey, {
           serverName,
           playerCount: count,
           mapInfo,
           modeInfo
-        };
+        });
       }
       ensureStatusMessage(this);
     },
     onClientStateInitialized: function(eventObj) {
-      const server = extractServerFromEvent(eventObj);
-      const client = extractClientFromEvent(eventObj);
+      const observation = normalizeObservationFromEvent(eventObj, {
+        isDisconnect: false,
+        source: "client_state_initialized",
+        isBootstrap: false
+      });
       this.observeServerPopulation(
-        server,
-        client,
-        false,
-        "client_state_initialized",
-        extractMapInfoFromEvent(eventObj),
-        extractModeInfoFromEvent(eventObj),
-        false
+        observation.server,
+        observation.client,
+        observation.isDisconnect,
+        observation.source,
+        observation.mapHint,
+        observation.modeHint,
+        observation.isBootstrap
       );
     },
     onClientStateDisposed: function(eventObj) {
-      const server = extractServerFromEvent(eventObj);
-      const client = extractClientFromEvent(eventObj);
+      const observation = normalizeObservationFromEvent(eventObj, {
+        isDisconnect: true,
+        source: "client_state_disposed",
+        isBootstrap: false
+      });
       this.observeServerPopulation(
-        server,
-        client,
-        true,
-        "client_state_disposed",
-        extractMapInfoFromEvent(eventObj),
-        extractModeInfoFromEvent(eventObj),
-        false
+        observation.server,
+        observation.client,
+        observation.isDisconnect,
+        observation.source,
+        observation.mapHint,
+        observation.modeHint,
+        observation.isBootstrap
       );
     },
     onServerMonitoringStarted: function(eventObj) {
-      const server = extractServerFromEvent(eventObj);
+      const observation = normalizeObservationFromEvent(eventObj, {
+        isDisconnect: false,
+        source: "monitoring_started",
+        isBootstrap: true
+      });
       this.observeServerPopulation(
-        server,
-        null,
-        false,
-        "monitoring_started",
-        extractMapInfoFromEvent(eventObj),
-        extractModeInfoFromEvent(eventObj),
-        true
+        observation.server,
+        observation.client,
+        observation.isDisconnect,
+        observation.source,
+        observation.mapHint,
+        observation.modeHint,
+        observation.isBootstrap
       );
     },
     onMatchStarted: function(eventObj) {
-      const server = extractServerFromEvent(eventObj);
+      const observation = normalizeObservationFromEvent(eventObj, {
+        isDisconnect: false,
+        source: "match_started",
+        isBootstrap: false
+      });
       this.observeServerPopulation(
-        server,
-        null,
-        false,
-        "match_started",
-        extractMapInfoFromEvent(eventObj),
-        extractModeInfoFromEvent(eventObj),
-        false
+        observation.server,
+        observation.client,
+        observation.isDisconnect,
+        observation.source,
+        observation.mapHint,
+        observation.modeHint,
+        observation.isBootstrap
       );
     },
     onMatchEnded: function(eventObj) {
-      const server = extractServerFromEvent(eventObj);
+      const observation = normalizeObservationFromEvent(eventObj, {
+        isDisconnect: false,
+        source: "match_ended",
+        isBootstrap: false
+      });
       this.observeServerPopulation(
-        server,
-        null,
-        false,
-        "match_ended",
-        extractMapInfoFromEvent(eventObj),
-        extractModeInfoFromEvent(eventObj),
-        false
+        observation.server,
+        observation.client,
+        observation.isDisconnect,
+        observation.source,
+        observation.mapHint,
+        observation.modeHint,
+        observation.isBootstrap
       );
     },
     observeServerPopulation: function(server, client, isDisconnect, source, mapHint, modeHint, isBootstrap) {
@@ -1658,7 +2155,7 @@ var _b = (() => {
       }
       const serverKey = getServerKey(server);
       const serverName = cleanName(server.serverName || server.ServerName || server.hostname || server.Hostname || serverKey);
-      this.runtime.serverByKey[serverKey] = server;
+      setKnownServer(this, serverKey, server);
       const mapInfo = mergeNamedInfo(
         mapHint,
         mergeNamedInfo(extractMapInfoFromServer(server), this.runtime.mapInfoByServer[serverKey])
@@ -1667,10 +2164,9 @@ var _b = (() => {
         modeHint,
         mergeNamedInfo(extractModeInfoFromServer(server), this.runtime.modeInfoByServer[serverKey])
       );
-      this.runtime.mapInfoByServer[serverKey] = mapInfo;
-      this.runtime.modeInfoByServer[serverKey] = modeInfo;
-      if (!this.runtime.serverProbeLoggedByServer[serverKey]) {
-        this.runtime.serverProbeLoggedByServer[serverKey] = true;
+      setServerMetadata(this, serverKey, mapInfo, modeInfo);
+      if (!wasServerProbeLogged(this, serverKey)) {
+        markServerProbeLogged(this, serverKey);
         this.logger.logInformation(
           "{Name}: PROBE server={Server} server_keys={Keys}",
           this.name,
@@ -1685,10 +2181,7 @@ var _b = (() => {
           textFromUnknown(server.gameType || server.GameType || server.gametype || server.Gametype || "(none)")
         );
       }
-      if (!this.runtime.activeNetworkIdsByServer[serverKey]) {
-        this.runtime.activeNetworkIdsByServer[serverKey] = {};
-      }
-      const activeNetworkIds = this.runtime.activeNetworkIdsByServer[serverKey];
+      const activeNetworkIds = ensureActiveNetworkIds(this, serverKey);
       const networkId = extractNetworkIdFromClient(client);
       if (networkId) {
         if (isDisconnect) {
@@ -1722,12 +2215,12 @@ var _b = (() => {
         );
         return;
       }
-      this.runtime.statusSnapshotByServer[serverKey] = {
+      setStatusSnapshot(this, serverKey, {
         serverName,
         playerCount,
         mapInfo,
         modeInfo
-      };
+      });
       ensureStatusMessage(this);
       evaluatePopulation(this, serverKey, serverName, playerCount, {
         source: String(source || "unknown"),

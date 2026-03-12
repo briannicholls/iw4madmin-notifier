@@ -29,6 +29,21 @@ export function createNotificationDispatcher(config) {
 
       const primary = notifiers[0];
       primary.deleteMessage(plugin, messageId, meta || {}, done);
+    },
+
+    purgeStartupMessages: function (plugin, done) {
+      if (notifiers.length === 0) {
+        done(true, '', { scanned: 0, matched: 0, deleted: 0, pages: 0, rateLimited: false });
+        return;
+      }
+
+      const primary = notifiers[0];
+      if (typeof primary.purgeStartupMessages !== 'function') {
+        done(true, '', { scanned: 0, matched: 0, deleted: 0, pages: 0, rateLimited: false });
+        return;
+      }
+
+      primary.purgeStartupMessages(plugin, done);
     }
   };
 }
