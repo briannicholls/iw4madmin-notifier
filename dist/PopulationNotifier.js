@@ -904,9 +904,10 @@ var _b = (() => {
       statusDashboardSync: null,
       statusDashboardRetryAtMs: 0,
       notifyMessageIdByServer: {},
+      notifyThresholdByServer: {},
+      notifyLastAtMsByKey: {},
       statusDashboardFingerprint: "",
       notifyDeleteInFlightByServer: {},
-      globalNotifyLastAtMs: 0,
       globalNotifyDispatchInFlight: false,
       missingNotifierWarned: false,
       startupPurgeCompleted: false,
@@ -1718,18 +1719,20 @@ var _b = (() => {
     }
     return false;
   }
-  function sendNotifyMessageWithRetry(plugin2, alert, serverKey, serverName, playerCount, isStartup, source, done, attempt) {
+  function sendNotifyMessageWithRetry(plugin2, alert, serverKey, serverName, playerCount, isStartup, source, done, attempt, options) {
     const payload = buildNotifyPayload(plugin2, alert, serverKey, serverName, playerCount);
-    const existingMessageId = plugin2.runtime.notifyMessageIdByServer[serverKey] || "";
+    const forceCreate = !!(options && options.forceCreate);
+    const existingMessageId = forceCreate ? "" : plugin2.runtime.notifyMessageIdByServer[serverKey] || "";
     const attemptNumber = parseIntSafe(attempt, 1);
     plugin2.logger.logInformation(
-      "{Name}: Dispatching notify message server={Server} threshold={Threshold} startup={Startup} source={Source} existing_message_id={ExistingId} attempt={Attempt}",
+      "{Name}: Dispatching notify message server={Server} threshold={Threshold} startup={Startup} source={Source} existing_message_id={ExistingId} force_create={ForceCreate} attempt={Attempt}",
       plugin2.name,
       serverKey,
       parseIntSafe(alert.threshold, 0),
       isStartup === true ? "yes" : "no",
       String(source || "unknown"),
       existingMessageId || "(none)",
+      forceCreate ? "yes" : "no",
       attemptNumber
     );
     plugin2.dispatcher.upsertMessage(
@@ -1756,11 +1759,11 @@ var _b = (() => {
               retryDelayMs
             );
             scheduleAfterDelay(plugin2, retryDelayMs, function() {
-              sendNotifyMessageWithRetry(plugin2, alert, serverKey, serverName, playerCount, isStartup, source, done, attemptNumber + 1);
+              sendNotifyMessageWithRetry(plugin2, alert, serverKey, serverName, playerCount, isStartup, source, done, attemptNumber + 1, options);
             });
             return;
           }
-          if (typeof done === "function") done(false);
+          if (typeof done === "function") done(false, "");
           return;
         }
         if (messageId) {
@@ -1773,7 +1776,7 @@ var _b = (() => {
           parseIntSafe(alert.threshold, 0),
           GLOBAL_NOTIFY_COOLDOWN_MS / 6e4
         );
-        if (typeof done === "function") done(true);
+        if (typeof done === "function") done(true, messageId ? String(messageId) : existingMessageId);
       }
     );
   }
@@ -1781,7 +1784,12 @@ var _b = (() => {
     plugin2.dispatcher.deleteMessage(plugin2, messageId, { type: "notify", serverKey }, (ok, errorText, details) => {
       if (ok) {
         plugin2.runtime.notifyDeleteInFlightByServer[serverKey] = false;
-        delete plugin2.runtime.notifyMessageIdByServer[serverKey];
+        const deletedMessageId = String(messageId || "");
+        const activeMessageId = String(plugin2.runtime.notifyMessageIdByServer[serverKey] || "");
+        if (!activeMessageId || activeMessageId === deletedMessageId) {
+          delete plugin2.runtime.notifyMessageIdByServer[serverKey];
+          delete plugin2.runtime.notifyThresholdByServer[serverKey];
+        }
         return;
       }
       const retryDelayMs = computeNotifyRetryDelayMs(details, attemptNumber);
@@ -1810,31 +1818,37 @@ var _b = (() => {
   }
 
   // src/threshold-notify.js
-  function canSendGlobalNotify(plugin2) {
-    const remainingMs = remainingGlobalCooldownMs(plugin2.runtime.globalNotifyLastAtMs, Date.now());
+  function notifyCooldownKey(serverKey, threshold) {
+    return String(serverKey) + ":" + String(parseIntSafe(threshold, 0));
+  }
+  function canSendNotifyForThreshold(plugin2, serverKey, threshold) {
+    const key = notifyCooldownKey(serverKey, threshold);
+    const lastAtMs = parseIntSafe(plugin2.runtime.notifyLastAtMsByKey[key], 0);
+    const remainingMs = remainingGlobalCooldownMs(lastAtMs, Date.now());
     if (remainingMs <= 0) {
       return {
         allowed: true,
+        key,
         remainingMs: 0
       };
     }
     return {
       allowed: false,
+      key,
       remainingMs
     };
   }
-  function setGlobalNotifyNow(plugin2) {
-    plugin2.runtime.globalNotifyLastAtMs = Date.now();
-  }
-  function remainingCooldownMinutes(plugin2) {
-    const cooldown = canSendGlobalNotify(plugin2);
-    if (cooldown.allowed) return 0;
-    return Math.ceil(cooldown.remainingMs / 6e4);
+  function setNotifyNowForThreshold(plugin2, serverKey, threshold) {
+    const key = notifyCooldownKey(serverKey, threshold);
+    plugin2.runtime.notifyLastAtMsByKey[key] = Date.now();
   }
   function maybeDeleteNotifyForLowPopulation(plugin2, serverKey, playerCount, source) {
     if (playerCount >= NOTIFY_CLEAR_BELOW_COUNT) return;
     const messageId = plugin2.runtime.notifyMessageIdByServer[serverKey] || "";
-    if (!messageId) return;
+    if (!messageId) {
+      delete plugin2.runtime.notifyThresholdByServer[serverKey];
+      return;
+    }
     if (plugin2.runtime.notifyDeleteInFlightByServer[serverKey]) return;
     plugin2.runtime.notifyDeleteInFlightByServer[serverKey] = true;
     if (!plugin2.dispatcher || plugin2.dispatcher.count === 0) {
@@ -1852,8 +1866,12 @@ var _b = (() => {
     dispatchNotifyDeleteWithRetry(plugin2, serverKey, messageId, source, 1);
   }
   function handleThresholdCrossing(plugin2, alert, serverKey, serverName, playerCount, isStartup, source) {
+    const thresholdValue = parseIntSafe(alert && alert.threshold, 0);
+    const previousThresholdValue = parseIntSafe(plugin2.runtime.notifyThresholdByServer[serverKey], 0);
+    const previousMessageId = plugin2.runtime.notifyMessageIdByServer[serverKey] || "";
+    const shouldReplacePreviousMessage = thresholdValue > previousThresholdValue && !!previousMessageId;
     const hasNotifier = !!(plugin2.dispatcher && plugin2.dispatcher.count > 0);
-    const cooldown = canSendGlobalNotify(plugin2);
+    const cooldown = canSendNotifyForThreshold(plugin2, serverKey, thresholdValue);
     const policy = evaluateNotifyPolicy({
       hasNotifier,
       inFlight: plugin2.runtime.globalNotifyDispatchInFlight === true,
@@ -1872,7 +1890,7 @@ var _b = (() => {
           "{Name}: Notify suppressed because another notify dispatch is currently in-flight server={Server} threshold={Threshold} source={Source}",
           plugin2.name,
           serverKey,
-          parseIntSafe(alert.threshold, 0),
+          thresholdValue,
           String(source || "unknown")
         );
         return;
@@ -1880,10 +1898,10 @@ var _b = (() => {
       if (policy.reason === "cooldown") {
         const remainingMinutes = Math.ceil(policy.remainingMs / 6e4);
         plugin2.logger.logInformation(
-          "{Name}: Notify suppressed by global cooldown server={Server} threshold={Threshold} remaining_minutes={Remaining} source={Source}",
+          "{Name}: Notify suppressed by threshold cooldown server={Server} threshold={Threshold} remaining_minutes={Remaining} source={Source}",
           plugin2.name,
           serverKey,
-          parseIntSafe(alert.threshold, 0),
+          thresholdValue,
           remainingMinutes,
           String(source || "unknown")
         );
@@ -1891,12 +1909,19 @@ var _b = (() => {
       return;
     }
     plugin2.runtime.globalNotifyDispatchInFlight = true;
-    sendNotifyMessageWithRetry(plugin2, alert, serverKey, serverName, playerCount, isStartup, source, (ok) => {
+    sendNotifyMessageWithRetry(plugin2, alert, serverKey, serverName, playerCount, isStartup, source, (ok, sentMessageId) => {
       if (ok) {
-        setGlobalNotifyNow(plugin2);
+        setNotifyNowForThreshold(plugin2, serverKey, thresholdValue);
+        plugin2.runtime.notifyThresholdByServer[serverKey] = thresholdValue;
+        if (shouldReplacePreviousMessage && sentMessageId && previousMessageId && sentMessageId !== previousMessageId) {
+          if (!plugin2.runtime.notifyDeleteInFlightByServer[serverKey]) {
+            plugin2.runtime.notifyDeleteInFlightByServer[serverKey] = true;
+            dispatchNotifyDeleteWithRetry(plugin2, serverKey, previousMessageId, source, 1);
+          }
+        }
       }
       plugin2.runtime.globalNotifyDispatchInFlight = false;
-    }, 1);
+    }, 1, { forceCreate: shouldReplacePreviousMessage });
   }
 
   // src/population-engine.js
@@ -2197,8 +2222,8 @@ var _b = (() => {
       const hasNotify = plugin2.runtime.notifyMessageIdByServer[serverKey] ? "notify:on" : "notify:off";
       serverSummaries.push(serverKey + "=" + count + "(" + hasNotify + ")");
     }
-    const cooldownMinutes = remainingCooldownMinutes(plugin2);
-    const cooldownText = cooldownMinutes > 0 ? cooldownMinutes + "m" : "ready";
+    const cooldownKeyCount = Object.keys(plugin2.runtime.notifyLastAtMsByKey || {}).length;
+    const cooldownText = "per-threshold(" + cooldownKeyCount + ")";
     commandEvent.origin.tell(
       "Population Notifier v" + plugin2.version + " | alerts=" + thresholdListText(plugin2.config.alerts) + " | notifiers=" + plugin2.notifierNamesText() + " | discord=" + (plugin2.config.discordBotToken && plugin2.config.discordChannelId ? "configured" : "missing") + " | cooldown=" + cooldownText + " | status_msg=" + (plugin2.runtime.statusDashboardMessageId ? "1" : "0") + " | notify_msgs=" + Object.keys(plugin2.runtime.notifyMessageIdByServer || {}).length + " | servers=" + (serverSummaries.length > 0 ? serverSummaries.join(", ") : "(none)")
     );
