@@ -8,7 +8,7 @@ const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
 const version = String(packageJson.version || '0.0.0-dev');
 
 await build({
-  entryPoints: [resolve(workspaceRoot, 'src/index.js')],
+  entryPoints: [resolve(workspaceRoot, 'src/index.ts')],
   bundle: true,
   format: 'iife',
   globalName: '_b',

@@ -1,3 +1,4 @@
+"use strict";
 var _b = (() => {
   var __defProp = Object.defineProperty;
   var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -17,7 +18,7 @@ var _b = (() => {
   };
   var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-  // src/index.js
+  // src/index.ts
   var index_exports = {};
   __export(index_exports, {
     commands: () => commands,
@@ -234,286 +235,7 @@ var _b = (() => {
     };
   }
 
-  // src/event-extractors.js
-  function extractClientFromEvent(eventObj) {
-    if (!eventObj) return null;
-    if (eventObj.client) return eventObj.client;
-    if (eventObj.Client) return eventObj.Client;
-    if (eventObj.origin) return eventObj.origin;
-    if (eventObj.authorizedClient) return eventObj.authorizedClient;
-    if (eventObj.AuthorizedClient) return eventObj.AuthorizedClient;
-    const clientState = eventObj.clientState || eventObj.ClientState;
-    if (clientState) {
-      if (clientState.client) return clientState.client;
-      if (clientState.Client) return clientState.Client;
-      return clientState;
-    }
-    return null;
-  }
-  function extractServerFromClient(client) {
-    if (!client) return null;
-    if (client.currentServer) return client.currentServer;
-    if (client.CurrentServer) return client.CurrentServer;
-    if (client.server) return client.server;
-    if (client.Server) return client.Server;
-    return null;
-  }
-  function extractServerFromEvent(eventObj) {
-    if (!eventObj) return null;
-    if (eventObj.server) return eventObj.server;
-    if (eventObj.Server) return eventObj.Server;
-    if (eventObj.currentServer) return eventObj.currentServer;
-    if (eventObj.CurrentServer) return eventObj.CurrentServer;
-    const client = extractClientFromEvent(eventObj);
-    return extractServerFromClient(client);
-  }
-  function extractNetworkIdFromClient(client) {
-    if (!client) return "";
-    return normalizeNetworkId(
-      client.networkId || client.NetworkId || client.networkID || client.NetworkID || client.xuid || client.Xuid || client.guid || client.Guid || null
-    );
-  }
-
-  // src/server-metadata.js
-  function textFromUnknown(value) {
-    if (value == null) return "";
-    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-      return cleanName(String(value));
-    }
-    try {
-      if (typeof value.toString === "function") {
-        const rendered = cleanName(value.toString());
-        if (rendered && rendered !== "[object Object]") return rendered;
-      }
-    } catch (_) {
-    }
-    return "";
-  }
-  function pickCleanString(values) {
-    const list = Array.isArray(values) ? values : [];
-    for (let i = 0; i < list.length; i++) {
-      const cleaned = textFromUnknown(list[i]);
-      if (cleaned) return cleaned;
-    }
-    return "";
-  }
-  function listKeys(value, maxCount) {
-    if (!value) return "(none)";
-    const keys = [];
-    try {
-      const own = Object.keys(value);
-      for (let i = 0; i < own.length; i++) keys.push(String(own[i]));
-    } catch (_) {
-    }
-    try {
-      for (const key in value) {
-        keys.push(String(key));
-      }
-    } catch (_) {
-    }
-    const unique = Array.from(new Set(keys)).sort();
-    if (unique.length === 0) return "(none)";
-    const limit = Math.max(10, parseIntSafe(maxCount, 80));
-    return unique.slice(0, limit).join(",") + (unique.length > limit ? ",...(truncated)" : "");
-  }
-  function mergeNamedInfo(primary, secondary) {
-    const left = primary || {};
-    const right = secondary || {};
-    return {
-      readable: pickCleanString([left.readable, right.readable]),
-      slug: pickCleanString([left.slug, right.slug])
-    };
-  }
-  function extractMapInfoFromObject(mapValue) {
-    if (!mapValue) {
-      return { readable: "", slug: "" };
-    }
-    if (typeof mapValue === "string") {
-      return {
-        readable: "",
-        slug: cleanName(mapValue)
-      };
-    }
-    return {
-      readable: pickCleanString([
-        mapValue.alias,
-        mapValue.Alias,
-        mapValue.displayName,
-        mapValue.DisplayName,
-        mapValue.localizedName,
-        mapValue.LocalizedName
-      ]),
-      slug: pickCleanString([
-        mapValue.name,
-        mapValue.Name,
-        mapValue.mapName,
-        mapValue.MapName,
-        mapValue.slug,
-        mapValue.Slug,
-        mapValue.code,
-        mapValue.Code,
-        mapValue.id,
-        mapValue.Id,
-        mapValue
-      ])
-    };
-  }
-  function extractMapInfoFromServer(server) {
-    if (!server) {
-      return { readable: "", slug: "" };
-    }
-    const fromCurrentMap = extractMapInfoFromObject(server.currentMap || server.CurrentMap);
-    const fromMap = extractMapInfoFromObject(server.map || server.Map);
-    const merged = mergeNamedInfo(fromCurrentMap, fromMap);
-    return {
-      readable: pickCleanString([
-        merged.readable,
-        server.mapAlias,
-        server.MapAlias,
-        server.currentMapAlias,
-        server.CurrentMapAlias
-      ]),
-      slug: pickCleanString([
-        merged.slug,
-        server.mapName,
-        server.MapName,
-        server.currentMapName,
-        server.CurrentMapName
-      ])
-    };
-  }
-  function extractMapInfoFromEvent(eventObj) {
-    if (!eventObj) {
-      return { readable: "", slug: "" };
-    }
-    const direct = {
-      readable: pickCleanString([
-        eventObj.mapAlias,
-        eventObj.MapAlias,
-        eventObj.currentMapAlias,
-        eventObj.CurrentMapAlias
-      ]),
-      slug: pickCleanString([
-        eventObj.mapName,
-        eventObj.MapName,
-        eventObj.newMap,
-        eventObj.NewMap,
-        eventObj.currentMapName,
-        eventObj.CurrentMapName
-      ])
-    };
-    const fromObject = extractMapInfoFromObject(
-      eventObj.currentMap || eventObj.CurrentMap || eventObj.newCurrentMap || eventObj.NewCurrentMap
-    );
-    const fromServer = extractMapInfoFromServer(extractServerFromEvent(eventObj));
-    return mergeNamedInfo(direct, mergeNamedInfo(fromObject, fromServer));
-  }
-  function extractModeInfoFromServer(server) {
-    if (!server) {
-      return { readable: "", slug: "" };
-    }
-    return {
-      readable: pickCleanString([
-        server.gametypeName,
-        server.GametypeName,
-        server.gameTypeName,
-        server.GameTypeName,
-        server.gameModeName,
-        server.GameModeName,
-        server.modeName,
-        server.ModeName
-      ]),
-      slug: pickCleanString([
-        server.gameType,
-        server.GameType,
-        server.gametype,
-        server.Gametype,
-        server.gameMode,
-        server.GameMode,
-        server.mode,
-        server.Mode,
-        server.gameTypeCode,
-        server.GameTypeCode,
-        server.gametypeCode,
-        server.GametypeCode
-      ])
-    };
-  }
-  function extractModeInfoFromEvent(eventObj) {
-    if (!eventObj) {
-      return { readable: "", slug: "" };
-    }
-    const direct = {
-      readable: pickCleanString([
-        eventObj.gametypeName,
-        eventObj.GametypeName,
-        eventObj.gameTypeName,
-        eventObj.GameTypeName,
-        eventObj.gameModeName,
-        eventObj.GameModeName
-      ]),
-      slug: pickCleanString([
-        eventObj.gameType,
-        eventObj.GameType,
-        eventObj.gametype,
-        eventObj.Gametype,
-        eventObj.gameMode,
-        eventObj.GameMode
-      ])
-    };
-    const fromServer = extractModeInfoFromServer(extractServerFromEvent(eventObj));
-    return mergeNamedInfo(direct, fromServer);
-  }
-
-  // src/server-discovery.js
-  function collectServersFromManager(manager) {
-    if (!manager) return [];
-    const methodNames = [
-      "getServers",
-      "GetServers",
-      "getActiveServers",
-      "GetActiveServers"
-    ];
-    const propertyNames = [
-      "servers",
-      "Servers",
-      "activeServers",
-      "ActiveServers",
-      "gameServers",
-      "GameServers"
-    ];
-    const gathered = [];
-    for (let i = 0; i < methodNames.length; i++) {
-      const methodName = methodNames[i];
-      if (typeof manager[methodName] !== "function") continue;
-      try {
-        const rows = toArray(manager[methodName]());
-        for (let j = 0; j < rows.length; j++) {
-          if (rows[j]) gathered.push(rows[j]);
-        }
-      } catch (_) {
-      }
-    }
-    for (let i = 0; i < propertyNames.length; i++) {
-      const propertyName = propertyNames[i];
-      const rows = toArray(manager[propertyName]);
-      for (let j = 0; j < rows.length; j++) {
-        if (rows[j]) gathered.push(rows[j]);
-      }
-    }
-    const unique = {};
-    const out = [];
-    for (let i = 0; i < gathered.length; i++) {
-      const server = gathered[i];
-      const key = getServerKey(server);
-      if (unique[key]) continue;
-      unique[key] = true;
-      out.push(server);
-    }
-    return out;
-  }
-
-  // src/notifiers/discord.js
+  // src/infrastructure/notifiers/discord/http-client.js
   function responseToText(response) {
     if (response == null) return "";
     if (typeof response === "string") return response;
@@ -564,10 +286,6 @@ var _b = (() => {
     }
     return false;
   }
-  function isRetryableStatusCode(statusCode) {
-    if (!Number.isFinite(statusCode)) return false;
-    return statusCode === 429 || statusCode >= 500;
-  }
   function tryParseJson(text) {
     const body = String(text == null ? "" : text).trim();
     if (!body) return null;
@@ -598,20 +316,6 @@ var _b = (() => {
     if (id) return true;
     if (!text || String(text).trim() === "") return true;
     return false;
-  }
-  function computeRetryDelayMs(details, attemptNumber, defaultDelayMs, maxDelayMs) {
-    const retryAfterMs = Number(details && details.retryAfterMs);
-    if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
-      return Math.max(1e3, Math.min(maxDelayMs, Math.round(retryAfterMs)));
-    }
-    const statusCode = Number(details && details.statusCode);
-    const isRateLimited = !!(details && details.isRateLimited);
-    if (isRateLimited || isRetryableStatusCode(statusCode)) {
-      const attempt = Math.max(1, Number.isFinite(Number(attemptNumber)) ? Number(attemptNumber) : 1);
-      const baseDelay = Math.round(defaultDelayMs * attempt);
-      return Math.max(1e3, Math.min(maxDelayMs, baseDelay));
-    }
-    return 0;
   }
   function buildErrorText(statusCode, parsed, text) {
     if (parsed && typeof parsed.message === "string" && parsed.message) {
@@ -688,18 +392,9 @@ var _b = (() => {
       });
     }
   }
-  function createDiscordNotifier(config) {
-    const botToken = String(config && config.discordBotToken ? config.discordBotToken : "").trim();
-    const channelId = String(config && config.discordChannelId ? config.discordChannelId : "").trim();
-    if (!botToken || !channelId) return null;
-    const headers = createHeaders(botToken);
-    const createUrl = "https://discord.com/api/v10/channels/" + channelId + "/messages";
-    const meUrl = "https://discord.com/api/v10/users/@me";
-    const channelMessagesUrl = "https://discord.com/api/v10/channels/" + channelId + "/messages";
-    const STARTUP_PURGE_FETCH_MAX_ATTEMPTS = 4;
-    const STARTUP_PURGE_DELETE_MAX_ATTEMPTS = 4;
-    const STARTUP_PURGE_RETRY_DEFAULT_MS = 5e3;
-    const STARTUP_PURGE_RETRY_MAX_MS = 6e4;
+
+  // src/infrastructure/notifiers/discord/message-ops.js
+  function createMessageOps(createUrl, meUrl, channelMessagesUrl, headers) {
     function createMessage(plugin2, payload, meta, done) {
       requestJson(plugin2, createUrl, "POST", payload, headers, function(result) {
         if (!result.ok) {
@@ -798,27 +493,74 @@ var _b = (() => {
         });
       });
     }
-    function deleteMessageWithRetry(plugin2, messageId, attemptNumber, done) {
-      const attempt = Math.max(1, Number(attemptNumber || 1));
+    function deleteMessage(plugin2, messageId, meta, done) {
       const url = createUrl + "/" + String(messageId);
       requestJson(plugin2, url, "DELETE", null, headers, function(result) {
-        if (result.ok || result.isMissingMessage) {
-          done(true, "", {
+        if (!result.ok) {
+          done(false, result.errorText || "discord delete failed", {
             statusCode: result.statusCode,
-            retryAfterMs: 0,
-            isRateLimited: false,
-            isMissingMessage: !!result.isMissingMessage,
-            discordCode: parseDiscordErrorCode(result.parsed)
+            retryAfterMs: result.retryAfterMs,
+            isRateLimited: result.isRateLimited,
+            isMissingMessage: result.isMissingMessage
           });
           return;
         }
-        const details = {
+        done(true, "", {
           statusCode: result.statusCode,
-          retryAfterMs: result.retryAfterMs,
-          isRateLimited: result.isRateLimited,
-          isMissingMessage: result.isMissingMessage,
-          discordCode: parseDiscordErrorCode(result.parsed)
-        };
+          retryAfterMs: 0,
+          isRateLimited: false,
+          isMissingMessage: false
+        });
+      });
+    }
+    return {
+      createMessage,
+      updateMessage,
+      getCurrentBotUserId,
+      listChannelMessages,
+      deleteMessage
+    };
+  }
+
+  // src/infrastructure/notifiers/discord/retry-policy.js
+  function isRetryableStatusCode(statusCode) {
+    if (!Number.isFinite(statusCode)) return false;
+    return statusCode === 429 || statusCode >= 500;
+  }
+  function computeRetryDelayMs(details, attemptNumber, defaultDelayMs, maxDelayMs) {
+    const retryAfterMs = Number(details && details.retryAfterMs);
+    if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+      return Math.max(1e3, Math.min(maxDelayMs, Math.round(retryAfterMs)));
+    }
+    const statusCode = Number(details && details.statusCode);
+    const isRateLimited = !!(details && details.isRateLimited);
+    if (isRateLimited || isRetryableStatusCode(statusCode)) {
+      const attempt = Math.max(1, Number.isFinite(Number(attemptNumber)) ? Number(attemptNumber) : 1);
+      const baseDelay = Math.round(defaultDelayMs * attempt);
+      return Math.max(1e3, Math.min(maxDelayMs, baseDelay));
+    }
+    return 0;
+  }
+
+  // src/infrastructure/notifiers/discord/startup-purge.js
+  function createStartupPurgeService(messageOps, options) {
+    const STARTUP_PURGE_FETCH_MAX_ATTEMPTS = options.STARTUP_PURGE_FETCH_MAX_ATTEMPTS;
+    const STARTUP_PURGE_DELETE_MAX_ATTEMPTS = options.STARTUP_PURGE_DELETE_MAX_ATTEMPTS;
+    const STARTUP_PURGE_RETRY_DEFAULT_MS = options.STARTUP_PURGE_RETRY_DEFAULT_MS;
+    const STARTUP_PURGE_RETRY_MAX_MS = options.STARTUP_PURGE_RETRY_MAX_MS;
+    function deleteMessageWithRetry(plugin2, messageId, attemptNumber, done) {
+      const attempt = Math.max(1, Number(attemptNumber || 1));
+      messageOps.deleteMessage(plugin2, messageId, {}, function(ok, errorText, details) {
+        if (ok || details && details.isMissingMessage) {
+          done(true, "", {
+            statusCode: details && details.statusCode,
+            retryAfterMs: 0,
+            isRateLimited: false,
+            isMissingMessage: !!(details && details.isMissingMessage),
+            discordCode: 0
+          });
+          return;
+        }
         const retryDelayMs = computeRetryDelayMs(details, attempt, STARTUP_PURGE_RETRY_DEFAULT_MS, STARTUP_PURGE_RETRY_MAX_MS);
         const shouldRetry = retryDelayMs > 0 && attempt < STARTUP_PURGE_DELETE_MAX_ATTEMPTS;
         if (shouldRetry && plugin2.pluginHelper && typeof plugin2.pluginHelper.requestNotifyAfterDelay === "function") {
@@ -838,9 +580,9 @@ var _b = (() => {
           "{Name}: Discord startup purge delete failed message_id={MessageId} error={Error}",
           plugin2.name,
           String(messageId),
-          result.errorText || "unknown discord delete error"
+          errorText || "unknown discord delete error"
         );
-        done(false, result.errorText || "discord delete failed", details);
+        done(false, errorText || "discord delete failed", details || {});
       });
     }
     function purgeChannelMessagesByAuthor(plugin2, authorId, done) {
@@ -879,7 +621,7 @@ var _b = (() => {
       }
       function fetchPage(beforeMessageId, attemptNumber) {
         const fetchAttempt = Math.max(1, Number(attemptNumber || 1));
-        listChannelMessages(plugin2, beforeMessageId, function(ok, messages, errorText, details) {
+        messageOps.listChannelMessages(plugin2, beforeMessageId, function(ok, messages, errorText, details) {
           if (!ok) {
             if (details && details.isRateLimited) stats.rateLimited = true;
             const retryDelayMs = computeRetryDelayMs(details, fetchAttempt, STARTUP_PURGE_RETRY_DEFAULT_MS, STARTUP_PURGE_RETRY_MAX_MS);
@@ -929,13 +671,68 @@ var _b = (() => {
       }
       fetchPage("", 1);
     }
+    function purgeStartupMessages(plugin2, done) {
+      messageOps.getCurrentBotUserId(plugin2, function(ok, botUserId, errorText, details) {
+        if (!ok) {
+          done(false, errorText || "failed to resolve bot identity", {
+            scanned: 0,
+            matched: 0,
+            deleted: 0,
+            pages: 0,
+            rateLimited: !!(details && details.isRateLimited),
+            discordCode: parseDiscordErrorCode(details && details.parsed)
+          });
+          return;
+        }
+        purgeChannelMessagesByAuthor(plugin2, botUserId, function(purgeOk, purgeErrorText, stats) {
+          if (!purgeOk) {
+            done(false, purgeErrorText || "startup purge failed", stats || {
+              scanned: 0,
+              matched: 0,
+              deleted: 0,
+              pages: 0,
+              rateLimited: false
+            });
+            return;
+          }
+          done(true, "", stats || {
+            scanned: 0,
+            matched: 0,
+            deleted: 0,
+            pages: 0,
+            rateLimited: false
+          });
+        });
+      });
+    }
+    return {
+      purgeStartupMessages
+    };
+  }
+
+  // src/infrastructure/notifiers/discord/index.js
+  function createDiscordNotifier(config) {
+    const botToken = String(config && config.discordBotToken ? config.discordBotToken : "").trim();
+    const channelId = String(config && config.discordChannelId ? config.discordChannelId : "").trim();
+    if (!botToken || !channelId) return null;
+    const headers = createHeaders(botToken);
+    const createUrl = "https://discord.com/api/v10/channels/" + channelId + "/messages";
+    const meUrl = "https://discord.com/api/v10/users/@me";
+    const channelMessagesUrl = "https://discord.com/api/v10/channels/" + channelId + "/messages";
+    const messageOps = createMessageOps(createUrl, meUrl, channelMessagesUrl, headers);
+    const startupPurge = createStartupPurgeService(messageOps, {
+      STARTUP_PURGE_FETCH_MAX_ATTEMPTS: 4,
+      STARTUP_PURGE_DELETE_MAX_ATTEMPTS: 4,
+      STARTUP_PURGE_RETRY_DEFAULT_MS: 5e3,
+      STARTUP_PURGE_RETRY_MAX_MS: 6e4
+    });
     return {
       name: "discord",
       upsertMessage: function(plugin2, existingMessageId, payload, meta, done) {
         const type = meta && meta.type ? String(meta.type) : "message";
         const serverKey = meta && meta.serverKey ? String(meta.serverKey) : "(unknown)";
         if (existingMessageId) {
-          updateMessage(plugin2, existingMessageId, payload, meta, function(ok, messageId, errorText, details) {
+          messageOps.updateMessage(plugin2, existingMessageId, payload, meta, function(ok, messageId, errorText, details) {
             if (ok) {
               plugin2.logger.logInformation(
                 "{Name}: Discord {Type} message updated server={Server} message_id={MessageId} status={Status}",
@@ -968,7 +765,7 @@ var _b = (() => {
               serverKey,
               String(existingMessageId)
             );
-            createMessage(plugin2, payload, meta, function(createOk, createMessageId, createErrorText, createDetails) {
+            messageOps.createMessage(plugin2, payload, meta, function(createOk, createMessageId, createErrorText, createDetails) {
               if (!createOk) {
                 done(false, "", createErrorText || "discord create failed after update fallback", createDetails || null);
                 return;
@@ -986,7 +783,7 @@ var _b = (() => {
           });
           return;
         }
-        createMessage(plugin2, payload, meta, function(ok, messageId, errorText, details) {
+        messageOps.createMessage(plugin2, payload, meta, function(ok, messageId, errorText, details) {
           if (!ok) {
             done(false, "", errorText || "discord create failed", details || null);
             return;
@@ -1009,10 +806,9 @@ var _b = (() => {
         }
         const type = meta && meta.type ? String(meta.type) : "message";
         const serverKey = meta && meta.serverKey ? String(meta.serverKey) : "(unknown)";
-        const url = createUrl + "/" + String(messageId);
-        requestJson(plugin2, url, "DELETE", null, headers, function(result) {
-          if (!result.ok) {
-            if (result.isMissingMessage) {
+        messageOps.deleteMessage(plugin2, messageId, meta, function(ok, errorText, details) {
+          if (!ok) {
+            if (details && details.isMissingMessage) {
               plugin2.logger.logInformation(
                 "{Name}: Discord {Type} message already missing server={Server} message_id={MessageId}; treating delete as success",
                 plugin2.name,
@@ -1021,19 +817,14 @@ var _b = (() => {
                 String(messageId)
               );
               done(true, "", {
-                statusCode: result.statusCode,
+                statusCode: details.statusCode,
                 retryAfterMs: 0,
                 isRateLimited: false,
                 isMissingMessage: true
               });
               return;
             }
-            done(false, result.errorText || "discord delete failed", {
-              statusCode: result.statusCode,
-              retryAfterMs: result.retryAfterMs,
-              isRateLimited: result.isRateLimited,
-              isMissingMessage: result.isMissingMessage
-            });
+            done(false, errorText || "discord delete failed", details || {});
             return;
           }
           plugin2.logger.logInformation(
@@ -1042,10 +833,10 @@ var _b = (() => {
             type,
             serverKey,
             String(messageId),
-            result.statusCode == null ? "(unknown)" : String(result.statusCode)
+            details && details.statusCode == null ? "(unknown)" : String(details.statusCode)
           );
-          done(true, "", {
-            statusCode: result.statusCode,
+          done(true, "", details || {
+            statusCode: null,
             retryAfterMs: 0,
             isRateLimited: false,
             isMissingMessage: false
@@ -1053,37 +844,7 @@ var _b = (() => {
         });
       },
       purgeStartupMessages: function(plugin2, done) {
-        getCurrentBotUserId(plugin2, function(ok, botUserId, errorText, details) {
-          if (!ok) {
-            done(false, errorText || "failed to resolve bot identity", {
-              scanned: 0,
-              matched: 0,
-              deleted: 0,
-              pages: 0,
-              rateLimited: !!(details && details.isRateLimited)
-            });
-            return;
-          }
-          purgeChannelMessagesByAuthor(plugin2, botUserId, function(purgeOk, purgeErrorText, stats) {
-            if (!purgeOk) {
-              done(false, purgeErrorText || "startup purge failed", stats || {
-                scanned: 0,
-                matched: 0,
-                deleted: 0,
-                pages: 0,
-                rateLimited: false
-              });
-              return;
-            }
-            done(true, "", stats || {
-              scanned: 0,
-              matched: 0,
-              deleted: 0,
-              pages: 0,
-              rateLimited: false
-            });
-          });
-        });
+        startupPurge.purgeStartupMessages(plugin2, done);
       }
     };
   }
@@ -1127,6 +888,449 @@ var _b = (() => {
         primary.purgeStartupMessages(plugin2, done);
       }
     };
+  }
+
+  // src/plugin-state.js
+  function createRuntimeState() {
+    return {
+      serverByKey: {},
+      activeNetworkIdsByServer: {},
+      populationStateByServer: {},
+      mapInfoByServer: {},
+      modeInfoByServer: {},
+      serverProbeLoggedByServer: {},
+      statusSnapshotByServer: {},
+      statusDashboardMessageId: "",
+      statusDashboardSync: null,
+      statusDashboardRetryAtMs: 0,
+      notifyMessageIdByServer: {},
+      statusDashboardFingerprint: "",
+      notifyDeleteInFlightByServer: {},
+      globalNotifyLastAtMs: 0,
+      globalNotifyDispatchInFlight: false,
+      missingNotifierWarned: false,
+      startupPurgeCompleted: false,
+      startupBootstrapStarted: false
+    };
+  }
+  function ensureServerPopulationState(plugin2, serverKey) {
+    let state = plugin2.runtime.populationStateByServer[serverKey];
+    if (!state) {
+      state = {
+        initialized: false,
+        lastCount: null,
+        firedByThreshold: {}
+      };
+      plugin2.runtime.populationStateByServer[serverKey] = state;
+    }
+    return state;
+  }
+  function saveServerPopulationState(plugin2, serverKey, state) {
+    plugin2.runtime.populationStateByServer[serverKey] = state;
+  }
+  function setKnownServer(plugin2, serverKey, server) {
+    plugin2.runtime.serverByKey[serverKey] = server;
+  }
+  function setServerMetadata(plugin2, serverKey, mapInfo, modeInfo) {
+    plugin2.runtime.mapInfoByServer[serverKey] = mapInfo;
+    plugin2.runtime.modeInfoByServer[serverKey] = modeInfo;
+  }
+  function setStatusSnapshot(plugin2, serverKey, snapshot) {
+    plugin2.runtime.statusSnapshotByServer[serverKey] = snapshot;
+  }
+  function clearStatusSnapshots(plugin2) {
+    plugin2.runtime.statusSnapshotByServer = {};
+  }
+  function ensureActiveNetworkIds(plugin2, serverKey) {
+    if (!plugin2.runtime.activeNetworkIdsByServer[serverKey]) {
+      plugin2.runtime.activeNetworkIdsByServer[serverKey] = {};
+    }
+    return plugin2.runtime.activeNetworkIdsByServer[serverKey];
+  }
+  function wasServerProbeLogged(plugin2, serverKey) {
+    return !!plugin2.runtime.serverProbeLoggedByServer[serverKey];
+  }
+  function markServerProbeLogged(plugin2, serverKey) {
+    plugin2.runtime.serverProbeLoggedByServer[serverKey] = true;
+  }
+
+  // src/event-extractors.js
+  function extractClientFromEvent(eventObj) {
+    if (!eventObj) return null;
+    if (eventObj.client) return eventObj.client;
+    if (eventObj.Client) return eventObj.Client;
+    if (eventObj.origin) return eventObj.origin;
+    if (eventObj.authorizedClient) return eventObj.authorizedClient;
+    if (eventObj.AuthorizedClient) return eventObj.AuthorizedClient;
+    const clientState = eventObj.clientState || eventObj.ClientState;
+    if (clientState) {
+      if (clientState.client) return clientState.client;
+      if (clientState.Client) return clientState.Client;
+      return clientState;
+    }
+    return null;
+  }
+  function extractServerFromClient(client) {
+    if (!client) return null;
+    if (client.currentServer) return client.currentServer;
+    if (client.CurrentServer) return client.CurrentServer;
+    if (client.server) return client.server;
+    if (client.Server) return client.Server;
+    return null;
+  }
+  function extractServerFromEvent(eventObj) {
+    if (!eventObj) return null;
+    if (eventObj.server) return eventObj.server;
+    if (eventObj.Server) return eventObj.Server;
+    if (eventObj.currentServer) return eventObj.currentServer;
+    if (eventObj.CurrentServer) return eventObj.CurrentServer;
+    const client = extractClientFromEvent(eventObj);
+    return extractServerFromClient(client);
+  }
+  function extractNetworkIdFromClient(client) {
+    if (!client) return "";
+    return normalizeNetworkId(
+      client.networkId || client.NetworkId || client.networkID || client.NetworkID || client.xuid || client.Xuid || client.guid || client.Guid || null
+    );
+  }
+
+  // src/server-metadata/text.js
+  function textFromUnknown(value) {
+    if (value == null) return "";
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      return cleanName(String(value));
+    }
+    try {
+      if (typeof value.toString === "function") {
+        const rendered = cleanName(value.toString());
+        if (rendered && rendered !== "[object Object]") return rendered;
+      }
+    } catch (_) {
+    }
+    return "";
+  }
+  function pickCleanString(values) {
+    const list = Array.isArray(values) ? values : [];
+    for (let i = 0; i < list.length; i++) {
+      const cleaned = textFromUnknown(list[i]);
+      if (cleaned) return cleaned;
+    }
+    return "";
+  }
+  function listKeys(value, maxCount) {
+    if (!value) return "(none)";
+    const keys = [];
+    try {
+      const own = Object.keys(value);
+      for (let i = 0; i < own.length; i++) keys.push(String(own[i]));
+    } catch (_) {
+    }
+    try {
+      for (const key in value) {
+        keys.push(String(key));
+      }
+    } catch (_) {
+    }
+    const unique = Array.from(new Set(keys)).sort();
+    if (unique.length === 0) return "(none)";
+    const limit = Math.max(10, parseIntSafe(maxCount, 80));
+    return unique.slice(0, limit).join(",") + (unique.length > limit ? ",...(truncated)" : "");
+  }
+  function mergeNamedInfo(primary, secondary) {
+    const left = primary || {};
+    const right = secondary || {};
+    return {
+      readable: pickCleanString([left.readable, right.readable]),
+      slug: pickCleanString([left.slug, right.slug])
+    };
+  }
+
+  // src/server-metadata/map-info.js
+  function extractMapInfoFromObject(mapValue) {
+    if (!mapValue) {
+      return { readable: "", slug: "" };
+    }
+    if (typeof mapValue === "string") {
+      return {
+        readable: "",
+        slug: cleanName(mapValue)
+      };
+    }
+    return {
+      readable: pickCleanString([
+        mapValue.alias,
+        mapValue.Alias,
+        mapValue.displayName,
+        mapValue.DisplayName,
+        mapValue.localizedName,
+        mapValue.LocalizedName
+      ]),
+      slug: pickCleanString([
+        mapValue.name,
+        mapValue.Name,
+        mapValue.mapName,
+        mapValue.MapName,
+        mapValue.slug,
+        mapValue.Slug,
+        mapValue.code,
+        mapValue.Code,
+        mapValue.id,
+        mapValue.Id,
+        mapValue
+      ])
+    };
+  }
+  function extractMapInfoFromServer(server) {
+    if (!server) {
+      return { readable: "", slug: "" };
+    }
+    const fromCurrentMap = extractMapInfoFromObject(server.currentMap || server.CurrentMap);
+    const fromMap = extractMapInfoFromObject(server.map || server.Map);
+    const merged = mergeNamedInfo(fromCurrentMap, fromMap);
+    return {
+      readable: pickCleanString([
+        merged.readable,
+        server.mapAlias,
+        server.MapAlias,
+        server.currentMapAlias,
+        server.CurrentMapAlias
+      ]),
+      slug: pickCleanString([
+        merged.slug,
+        server.mapName,
+        server.MapName,
+        server.currentMapName,
+        server.CurrentMapName
+      ])
+    };
+  }
+  function extractMapInfoFromEvent(eventObj) {
+    if (!eventObj) {
+      return { readable: "", slug: "" };
+    }
+    const direct = {
+      readable: pickCleanString([
+        eventObj.mapAlias,
+        eventObj.MapAlias,
+        eventObj.currentMapAlias,
+        eventObj.CurrentMapAlias
+      ]),
+      slug: pickCleanString([
+        eventObj.mapName,
+        eventObj.MapName,
+        eventObj.newMap,
+        eventObj.NewMap,
+        eventObj.currentMapName,
+        eventObj.CurrentMapName
+      ])
+    };
+    const fromObject = extractMapInfoFromObject(
+      eventObj.currentMap || eventObj.CurrentMap || eventObj.newCurrentMap || eventObj.NewCurrentMap
+    );
+    const fromServer = extractMapInfoFromServer(extractServerFromEvent(eventObj));
+    return mergeNamedInfo(direct, mergeNamedInfo(fromObject, fromServer));
+  }
+
+  // src/server-metadata/mode-info.js
+  function extractModeInfoFromServer(server) {
+    if (!server) {
+      return { readable: "", slug: "" };
+    }
+    return {
+      readable: pickCleanString([
+        server.gametypeName,
+        server.GametypeName,
+        server.gameTypeName,
+        server.GameTypeName,
+        server.gameModeName,
+        server.GameModeName,
+        server.modeName,
+        server.ModeName
+      ]),
+      slug: pickCleanString([
+        server.gameType,
+        server.GameType,
+        server.gametype,
+        server.Gametype,
+        server.gameMode,
+        server.GameMode,
+        server.mode,
+        server.Mode,
+        server.gameTypeCode,
+        server.GameTypeCode,
+        server.gametypeCode,
+        server.GametypeCode
+      ])
+    };
+  }
+  function extractModeInfoFromEvent(eventObj) {
+    if (!eventObj) {
+      return { readable: "", slug: "" };
+    }
+    const direct = {
+      readable: pickCleanString([
+        eventObj.gametypeName,
+        eventObj.GametypeName,
+        eventObj.gameTypeName,
+        eventObj.GameTypeName,
+        eventObj.gameModeName,
+        eventObj.GameModeName
+      ]),
+      slug: pickCleanString([
+        eventObj.gameType,
+        eventObj.GameType,
+        eventObj.gametype,
+        eventObj.Gametype,
+        eventObj.gameMode,
+        eventObj.GameMode
+      ])
+    };
+    const fromServer = extractModeInfoFromServer(extractServerFromEvent(eventObj));
+    return mergeNamedInfo(direct, fromServer);
+  }
+
+  // src/observation-ingress.js
+  function normalizeObservationFromEvent(eventObj, options) {
+    const opts = options || {};
+    const server = extractServerFromEvent(eventObj);
+    return {
+      server,
+      client: extractClientFromEvent(eventObj),
+      isDisconnect: opts.isDisconnect === true,
+      source: String(opts.source || "unknown"),
+      mapHint: extractMapInfoFromEvent(eventObj),
+      modeHint: extractModeInfoFromEvent(eventObj),
+      isBootstrap: opts.isBootstrap === true
+    };
+  }
+  function normalizeBootstrapObservation(server) {
+    return {
+      server,
+      client: null,
+      isDisconnect: false,
+      source: "bootstrap_manager",
+      mapHint: extractMapInfoFromServer(server),
+      modeHint: extractModeInfoFromServer(server),
+      isBootstrap: true
+    };
+  }
+
+  // src/server-discovery.js
+  function collectServersFromManager(manager) {
+    if (!manager) return [];
+    const methodNames = [
+      "getServers",
+      "GetServers",
+      "getActiveServers",
+      "GetActiveServers"
+    ];
+    const propertyNames = [
+      "servers",
+      "Servers",
+      "activeServers",
+      "ActiveServers",
+      "gameServers",
+      "GameServers"
+    ];
+    const gathered = [];
+    for (let i = 0; i < methodNames.length; i++) {
+      const methodName = methodNames[i];
+      if (typeof manager[methodName] !== "function") continue;
+      try {
+        const rows = toArray(manager[methodName]());
+        for (let j = 0; j < rows.length; j++) {
+          if (rows[j]) gathered.push(rows[j]);
+        }
+      } catch (_) {
+      }
+    }
+    for (let i = 0; i < propertyNames.length; i++) {
+      const propertyName = propertyNames[i];
+      const rows = toArray(manager[propertyName]);
+      for (let j = 0; j < rows.length; j++) {
+        if (rows[j]) gathered.push(rows[j]);
+      }
+    }
+    const unique = {};
+    const out = [];
+    for (let i = 0; i < gathered.length; i++) {
+      const server = gathered[i];
+      const key = getServerKey(server);
+      if (unique[key]) continue;
+      unique[key] = true;
+      out.push(server);
+    }
+    return out;
+  }
+
+  // src/app/services/startup-flow.ts
+  function scheduleDelayedBootstrap(plugin2) {
+    if (!plugin2.pluginHelper || typeof plugin2.pluginHelper.requestNotifyAfterDelay !== "function") return;
+    plugin2.pluginHelper.requestNotifyAfterDelay(7e3, () => {
+      bootstrapKnownServers(plugin2);
+    });
+  }
+  function startBootstrapFlow(plugin2) {
+    if (plugin2.runtime.startupBootstrapStarted) return;
+    plugin2.runtime.startupBootstrapStarted = true;
+    bootstrapKnownServers(plugin2);
+    scheduleDelayedBootstrap(plugin2);
+  }
+  function runStartupPurgeThenBootstrap(plugin2) {
+    if (plugin2.runtime.startupPurgeCompleted) {
+      startBootstrapFlow(plugin2);
+      return;
+    }
+    plugin2.runtime.startupPurgeCompleted = true;
+    if (!plugin2.dispatcher || typeof plugin2.dispatcher.purgeStartupMessages !== "function" || plugin2.dispatcher.count === 0) {
+      startBootstrapFlow(plugin2);
+      return;
+    }
+    plugin2.logger.logInformation("{Name}: Startup purge scanning prior bot-authored Discord messages", plugin2.name);
+    plugin2.dispatcher.purgeStartupMessages(plugin2, (ok, errorText, stats) => {
+      const summary = stats || { scanned: 0, matched: 0, deleted: 0, pages: 0, rateLimited: false };
+      if (ok) {
+        plugin2.logger.logInformation(
+          "{Name}: Startup purge complete scanned={Scanned} matched={Matched} deleted={Deleted} pages={Pages} rate_limited={RateLimited}",
+          plugin2.name,
+          parseIntSafe(summary.scanned, 0),
+          parseIntSafe(summary.matched, 0),
+          parseIntSafe(summary.deleted, 0),
+          parseIntSafe(summary.pages, 0),
+          summary.rateLimited ? "yes" : "no"
+        );
+      } else {
+        plugin2.logger.logWarning(
+          "{Name}: Startup purge failed - {Error} (scanned={Scanned} matched={Matched} deleted={Deleted})",
+          plugin2.name,
+          String(errorText || "unknown startup purge error"),
+          parseIntSafe(summary.scanned, 0),
+          parseIntSafe(summary.matched, 0),
+          parseIntSafe(summary.deleted, 0)
+        );
+      }
+      startBootstrapFlow(plugin2);
+    });
+  }
+  function bootstrapKnownServers(plugin2) {
+    const servers = collectServersFromManager(plugin2.manager);
+    plugin2.logger.logInformation(
+      "{Name}: bootstrapKnownServers discovered {Count} server(s) from manager",
+      plugin2.name,
+      servers.length
+    );
+    for (let i = 0; i < servers.length; i++) {
+      const observation = normalizeBootstrapObservation(servers[i]);
+      plugin2.observeServerPopulation(
+        observation.server,
+        observation.client,
+        observation.isDisconnect,
+        observation.source,
+        observation.mapHint,
+        observation.modeHint,
+        observation.isBootstrap
+      );
+    }
   }
 
   // src/generated/t6-thumbnail-manifest.js
@@ -1450,11 +1654,162 @@ var _b = (() => {
     return remainingMs > 0 ? remainingMs : 0;
   }
 
-  // src/threshold-notify.js
+  // src/presentation/discord/notify-payload-renderer.js
+  function buildNotifyMentionData(plugin2) {
+    const roleId = String(plugin2 && plugin2.config && plugin2.config.discordRoleId ? plugin2.config.discordRoleId : "").trim();
+    if (roleId) {
+      return {
+        prefix: "<@&" + roleId + ">",
+        allowedMentions: {
+          parse: [],
+          roles: [roleId]
+        }
+      };
+    }
+    return {
+      prefix: NOTIFY_MENTION_PREFIX,
+      allowedMentions: {
+        parse: ["everyone"]
+      }
+    };
+  }
+  function buildNotifyPayload(plugin2, alert, serverKey, serverName, playerCount) {
+    const threshold = parseIntSafe(alert.threshold, 0);
+    const context = buildMessageContext(serverName, serverKey, playerCount, threshold);
+    let sentence = formatPopulationMessage(alert.message, context);
+    sentence = String(sentence || "").replace(/\s+/g, " ").trim();
+    if (!sentence) {
+      sentence = serverName + " is filling up.";
+    }
+    if (!/[.!?]$/.test(sentence)) {
+      sentence += ".";
+    }
+    const mentionData = buildNotifyMentionData(plugin2);
+    const content = mentionData.prefix + " " + sentence;
+    return {
+      content,
+      allowed_mentions: mentionData.allowedMentions
+    };
+  }
+
+  // src/app/services/notify-dispatch.js
   var NOTIFY_SEND_MAX_ATTEMPTS = 3;
   var NOTIFY_DELETE_MAX_ATTEMPTS = 3;
   var DEFAULT_NOTIFY_RETRY_MS = 5e3;
   var MAX_NOTIFY_RETRY_MS = 6e4;
+  function computeNotifyRetryDelayMs(details, attemptNumber) {
+    const retryAfterMs = parseIntSafe(details && details.retryAfterMs, 0);
+    if (retryAfterMs > 0) {
+      return Math.max(1e3, Math.min(MAX_NOTIFY_RETRY_MS, retryAfterMs));
+    }
+    const statusCode = parseIntSafe(details && details.statusCode, 0);
+    const isRateLimited = !!(details && details.isRateLimited);
+    if (isRateLimited || statusCode >= 500) {
+      const attempt = Math.max(1, parseIntSafe(attemptNumber, 1));
+      const backoffMs = DEFAULT_NOTIFY_RETRY_MS * attempt;
+      return Math.max(1e3, Math.min(MAX_NOTIFY_RETRY_MS, backoffMs));
+    }
+    return 0;
+  }
+  function scheduleAfterDelay(plugin2, delayMs, callback) {
+    if (plugin2.pluginHelper && typeof plugin2.pluginHelper.requestNotifyAfterDelay === "function") {
+      plugin2.pluginHelper.requestNotifyAfterDelay(delayMs, callback);
+      return true;
+    }
+    return false;
+  }
+  function sendNotifyMessageWithRetry(plugin2, alert, serverKey, serverName, playerCount, isStartup, source, done, attempt) {
+    const payload = buildNotifyPayload(plugin2, alert, serverKey, serverName, playerCount);
+    const existingMessageId = plugin2.runtime.notifyMessageIdByServer[serverKey] || "";
+    const attemptNumber = parseIntSafe(attempt, 1);
+    plugin2.logger.logInformation(
+      "{Name}: Dispatching notify message server={Server} threshold={Threshold} startup={Startup} source={Source} existing_message_id={ExistingId} attempt={Attempt}",
+      plugin2.name,
+      serverKey,
+      parseIntSafe(alert.threshold, 0),
+      isStartup === true ? "yes" : "no",
+      String(source || "unknown"),
+      existingMessageId || "(none)",
+      attemptNumber
+    );
+    plugin2.dispatcher.upsertMessage(
+      plugin2,
+      existingMessageId,
+      payload,
+      { type: "notify", serverKey },
+      (ok, messageId, errorText, details) => {
+        if (!ok) {
+          const retryDelayMs = computeNotifyRetryDelayMs(details, attemptNumber);
+          const shouldRetry = retryDelayMs > 0 && attemptNumber < NOTIFY_SEND_MAX_ATTEMPTS;
+          plugin2.logger.logWarning(
+            "{Name}: Failed to dispatch notify message for {Server} - {Error}",
+            plugin2.name,
+            serverKey,
+            String(errorText || "unknown notify error")
+          );
+          if (shouldRetry) {
+            plugin2.logger.logInformation(
+              "{Name}: Scheduling notify retry server={Server} attempt={Attempt} retry_ms={RetryMs}",
+              plugin2.name,
+              serverKey,
+              attemptNumber + 1,
+              retryDelayMs
+            );
+            scheduleAfterDelay(plugin2, retryDelayMs, function() {
+              sendNotifyMessageWithRetry(plugin2, alert, serverKey, serverName, playerCount, isStartup, source, done, attemptNumber + 1);
+            });
+            return;
+          }
+          if (typeof done === "function") done(false);
+          return;
+        }
+        if (messageId) {
+          plugin2.runtime.notifyMessageIdByServer[serverKey] = String(messageId);
+        }
+        plugin2.logger.logInformation(
+          "{Name}: Notify message sent server={Server} threshold={Threshold} cooldown_minutes={CooldownMinutes}",
+          plugin2.name,
+          serverKey,
+          parseIntSafe(alert.threshold, 0),
+          GLOBAL_NOTIFY_COOLDOWN_MS / 6e4
+        );
+        if (typeof done === "function") done(true);
+      }
+    );
+  }
+  function dispatchNotifyDeleteWithRetry(plugin2, serverKey, messageId, source, attemptNumber) {
+    plugin2.dispatcher.deleteMessage(plugin2, messageId, { type: "notify", serverKey }, (ok, errorText, details) => {
+      if (ok) {
+        plugin2.runtime.notifyDeleteInFlightByServer[serverKey] = false;
+        delete plugin2.runtime.notifyMessageIdByServer[serverKey];
+        return;
+      }
+      const retryDelayMs = computeNotifyRetryDelayMs(details, attemptNumber);
+      const shouldRetry = retryDelayMs > 0 && attemptNumber < NOTIFY_DELETE_MAX_ATTEMPTS;
+      plugin2.logger.logWarning(
+        "{Name}: Failed to delete active notify message for {Server} - {Error}",
+        plugin2.name,
+        serverKey,
+        String(errorText || "unknown delete error")
+      );
+      if (shouldRetry && scheduleAfterDelay(plugin2, retryDelayMs, function() {
+        dispatchNotifyDeleteWithRetry(plugin2, serverKey, messageId, source, attemptNumber + 1);
+      })) {
+        plugin2.logger.logInformation(
+          "{Name}: Scheduling notify-delete retry server={Server} attempt={Attempt} retry_ms={RetryMs} source={Source}",
+          plugin2.name,
+          serverKey,
+          attemptNumber + 1,
+          retryDelayMs,
+          String(source || "unknown")
+        );
+        return;
+      }
+      plugin2.runtime.notifyDeleteInFlightByServer[serverKey] = false;
+    });
+  }
+
+  // src/threshold-notify.js
   function canSendGlobalNotify(plugin2) {
     const remainingMs = remainingGlobalCooldownMs(plugin2.runtime.globalNotifyLastAtMs, Date.now());
     if (remainingMs <= 0) {
@@ -1496,101 +1851,6 @@ var _b = (() => {
     );
     dispatchNotifyDeleteWithRetry(plugin2, serverKey, messageId, source, 1);
   }
-  function buildNotifyPayload(plugin2, alert, serverKey, serverName, playerCount) {
-    const threshold = parseIntSafe(alert.threshold, 0);
-    const context = buildMessageContext(serverName, serverKey, playerCount, threshold);
-    let sentence = formatPopulationMessage(alert.message, context);
-    sentence = String(sentence || "").replace(/\s+/g, " ").trim();
-    if (!sentence) {
-      sentence = serverName + " is filling up.";
-    }
-    if (!/[.!?]$/.test(sentence)) {
-      sentence += ".";
-    }
-    const mentionData = buildNotifyMentionData(plugin2);
-    const content = mentionData.prefix + " " + sentence;
-    return {
-      content,
-      allowed_mentions: mentionData.allowedMentions
-    };
-  }
-  function buildNotifyMentionData(plugin2) {
-    const roleId = String(plugin2 && plugin2.config && plugin2.config.discordRoleId ? plugin2.config.discordRoleId : "").trim();
-    if (roleId) {
-      return {
-        prefix: "<@&" + roleId + ">",
-        allowedMentions: {
-          parse: [],
-          roles: [roleId]
-        }
-      };
-    }
-    return {
-      prefix: NOTIFY_MENTION_PREFIX,
-      allowedMentions: {
-        parse: ["everyone"]
-      }
-    };
-  }
-  function sendNotifyMessage(plugin2, alert, serverKey, serverName, playerCount, isStartup, source, done, attempt) {
-    const payload = buildNotifyPayload(plugin2, alert, serverKey, serverName, playerCount);
-    const existingMessageId = plugin2.runtime.notifyMessageIdByServer[serverKey] || "";
-    const attemptNumber = parseIntSafe(attempt, 1);
-    plugin2.logger.logInformation(
-      "{Name}: Dispatching notify message server={Server} threshold={Threshold} startup={Startup} source={Source} existing_message_id={ExistingId} attempt={Attempt}",
-      plugin2.name,
-      serverKey,
-      parseIntSafe(alert.threshold, 0),
-      isStartup === true ? "yes" : "no",
-      String(source || "unknown"),
-      existingMessageId || "(none)",
-      attemptNumber
-    );
-    plugin2.dispatcher.upsertMessage(
-      plugin2,
-      existingMessageId,
-      payload,
-      { type: "notify", serverKey },
-      (ok, messageId, errorText, details) => {
-        if (!ok) {
-          const retryDelayMs = computeNotifyRetryDelayMs(details, attemptNumber);
-          const shouldRetry = retryDelayMs > 0 && attemptNumber < NOTIFY_SEND_MAX_ATTEMPTS;
-          plugin2.logger.logWarning(
-            "{Name}: Failed to dispatch notify message for {Server} - {Error}",
-            plugin2.name,
-            serverKey,
-            String(errorText || "unknown notify error")
-          );
-          if (shouldRetry) {
-            plugin2.logger.logInformation(
-              "{Name}: Scheduling notify retry server={Server} attempt={Attempt} retry_ms={RetryMs}",
-              plugin2.name,
-              serverKey,
-              attemptNumber + 1,
-              retryDelayMs
-            );
-            scheduleAfterDelay(plugin2, retryDelayMs, function() {
-              sendNotifyMessage(plugin2, alert, serverKey, serverName, playerCount, isStartup, source, done, attemptNumber + 1);
-            });
-            return;
-          }
-          if (typeof done === "function") done(false);
-          return;
-        }
-        if (messageId) {
-          plugin2.runtime.notifyMessageIdByServer[serverKey] = String(messageId);
-        }
-        plugin2.logger.logInformation(
-          "{Name}: Notify message sent server={Server} threshold={Threshold} cooldown_minutes={CooldownMinutes}",
-          plugin2.name,
-          serverKey,
-          parseIntSafe(alert.threshold, 0),
-          GLOBAL_NOTIFY_COOLDOWN_MS / 6e4
-        );
-        if (typeof done === "function") done(true);
-      }
-    );
-  }
   function handleThresholdCrossing(plugin2, alert, serverKey, serverName, playerCount, isStartup, source) {
     const hasNotifier = !!(plugin2.dispatcher && plugin2.dispatcher.count > 0);
     const cooldown = canSendGlobalNotify(plugin2);
@@ -1631,128 +1891,12 @@ var _b = (() => {
       return;
     }
     plugin2.runtime.globalNotifyDispatchInFlight = true;
-    sendNotifyMessage(plugin2, alert, serverKey, serverName, playerCount, isStartup, source, (ok) => {
+    sendNotifyMessageWithRetry(plugin2, alert, serverKey, serverName, playerCount, isStartup, source, (ok) => {
       if (ok) {
         setGlobalNotifyNow(plugin2);
       }
       plugin2.runtime.globalNotifyDispatchInFlight = false;
     }, 1);
-  }
-  function computeNotifyRetryDelayMs(details, attemptNumber) {
-    const retryAfterMs = parseIntSafe(details && details.retryAfterMs, 0);
-    if (retryAfterMs > 0) {
-      return Math.max(1e3, Math.min(MAX_NOTIFY_RETRY_MS, retryAfterMs));
-    }
-    const statusCode = parseIntSafe(details && details.statusCode, 0);
-    const isRateLimited = !!(details && details.isRateLimited);
-    if (isRateLimited || statusCode >= 500) {
-      const attempt = Math.max(1, parseIntSafe(attemptNumber, 1));
-      const backoffMs = DEFAULT_NOTIFY_RETRY_MS * attempt;
-      return Math.max(1e3, Math.min(MAX_NOTIFY_RETRY_MS, backoffMs));
-    }
-    return 0;
-  }
-  function scheduleAfterDelay(plugin2, delayMs, callback) {
-    if (plugin2.pluginHelper && typeof plugin2.pluginHelper.requestNotifyAfterDelay === "function") {
-      plugin2.pluginHelper.requestNotifyAfterDelay(delayMs, callback);
-      return true;
-    }
-    return false;
-  }
-  function dispatchNotifyDeleteWithRetry(plugin2, serverKey, messageId, source, attemptNumber) {
-    plugin2.dispatcher.deleteMessage(plugin2, messageId, { type: "notify", serverKey }, (ok, errorText, details) => {
-      if (ok) {
-        plugin2.runtime.notifyDeleteInFlightByServer[serverKey] = false;
-        delete plugin2.runtime.notifyMessageIdByServer[serverKey];
-        return;
-      }
-      const retryDelayMs = computeNotifyRetryDelayMs(details, attemptNumber);
-      const shouldRetry = retryDelayMs > 0 && attemptNumber < NOTIFY_DELETE_MAX_ATTEMPTS;
-      plugin2.logger.logWarning(
-        "{Name}: Failed to delete active notify message for {Server} - {Error}",
-        plugin2.name,
-        serverKey,
-        String(errorText || "unknown delete error")
-      );
-      if (shouldRetry && scheduleAfterDelay(plugin2, retryDelayMs, function() {
-        dispatchNotifyDeleteWithRetry(plugin2, serverKey, messageId, source, attemptNumber + 1);
-      })) {
-        plugin2.logger.logInformation(
-          "{Name}: Scheduling notify-delete retry server={Server} attempt={Attempt} retry_ms={RetryMs} source={Source}",
-          plugin2.name,
-          serverKey,
-          attemptNumber + 1,
-          retryDelayMs,
-          String(source || "unknown")
-        );
-        return;
-      }
-      plugin2.runtime.notifyDeleteInFlightByServer[serverKey] = false;
-    });
-  }
-
-  // src/plugin-state.js
-  function createRuntimeState() {
-    return {
-      serverByKey: {},
-      activeNetworkIdsByServer: {},
-      populationStateByServer: {},
-      mapInfoByServer: {},
-      modeInfoByServer: {},
-      serverProbeLoggedByServer: {},
-      statusSnapshotByServer: {},
-      statusDashboardMessageId: "",
-      statusDashboardSync: null,
-      statusDashboardRetryAtMs: 0,
-      notifyMessageIdByServer: {},
-      statusDashboardFingerprint: "",
-      notifyDeleteInFlightByServer: {},
-      globalNotifyLastAtMs: 0,
-      globalNotifyDispatchInFlight: false,
-      missingNotifierWarned: false,
-      startupPurgeCompleted: false,
-      startupBootstrapStarted: false
-    };
-  }
-  function ensureServerPopulationState(plugin2, serverKey) {
-    let state = plugin2.runtime.populationStateByServer[serverKey];
-    if (!state) {
-      state = {
-        initialized: false,
-        lastCount: null,
-        firedByThreshold: {}
-      };
-      plugin2.runtime.populationStateByServer[serverKey] = state;
-    }
-    return state;
-  }
-  function saveServerPopulationState(plugin2, serverKey, state) {
-    plugin2.runtime.populationStateByServer[serverKey] = state;
-  }
-  function setKnownServer(plugin2, serverKey, server) {
-    plugin2.runtime.serverByKey[serverKey] = server;
-  }
-  function setServerMetadata(plugin2, serverKey, mapInfo, modeInfo) {
-    plugin2.runtime.mapInfoByServer[serverKey] = mapInfo;
-    plugin2.runtime.modeInfoByServer[serverKey] = modeInfo;
-  }
-  function setStatusSnapshot(plugin2, serverKey, snapshot) {
-    plugin2.runtime.statusSnapshotByServer[serverKey] = snapshot;
-  }
-  function clearStatusSnapshots(plugin2) {
-    plugin2.runtime.statusSnapshotByServer = {};
-  }
-  function ensureActiveNetworkIds(plugin2, serverKey) {
-    if (!plugin2.runtime.activeNetworkIdsByServer[serverKey]) {
-      plugin2.runtime.activeNetworkIdsByServer[serverKey] = {};
-    }
-    return plugin2.runtime.activeNetworkIdsByServer[serverKey];
-  }
-  function wasServerProbeLogged(plugin2, serverKey) {
-    return !!plugin2.runtime.serverProbeLoggedByServer[serverKey];
-  }
-  function markServerProbeLogged(plugin2, serverKey) {
-    plugin2.runtime.serverProbeLoggedByServer[serverKey] = true;
   }
 
   // src/population-engine.js
@@ -1867,40 +2011,216 @@ var _b = (() => {
     saveServerPopulationState(plugin2, serverKey, state);
   }
 
-  // src/observation-ingress.js
-  function normalizeObservationFromEvent(eventObj, options) {
-    const opts = options || {};
-    const server = extractServerFromEvent(eventObj);
-    return {
-      server,
-      client: extractClientFromEvent(eventObj),
-      isDisconnect: opts.isDisconnect === true,
-      source: String(opts.source || "unknown"),
-      mapHint: extractMapInfoFromEvent(eventObj),
-      modeHint: extractModeInfoFromEvent(eventObj),
-      isBootstrap: opts.isBootstrap === true
-    };
+  // src/app/services/observation-service.ts
+  function refreshStatusMessages(plugin2) {
+    const keys = Object.keys(plugin2.runtime.populationStateByServer || {});
+    clearStatusSnapshots(plugin2);
+    for (let i = 0; i < keys.length; i++) {
+      const serverKey = keys[i];
+      const server = plugin2.runtime.serverByKey[serverKey];
+      if (!server) continue;
+      const state = plugin2.runtime.populationStateByServer[serverKey] || {};
+      const count = parseIntSafe(state.lastCount, 0);
+      const serverName = cleanName(server.serverName || server.ServerName || server.hostname || server.Hostname || serverKey);
+      const mapInfo = mergeNamedInfo(plugin2.runtime.mapInfoByServer[serverKey], extractMapInfoFromServer(server));
+      const modeInfo = mergeNamedInfo(plugin2.runtime.modeInfoByServer[serverKey], extractModeInfoFromServer(server));
+      setStatusSnapshot(plugin2, serverKey, {
+        serverName,
+        playerCount: count,
+        mapInfo,
+        modeInfo
+      });
+    }
+    ensureStatusMessage(plugin2);
   }
-  function normalizeBootstrapObservation(server) {
-    return {
-      server,
-      client: null,
-      isDisconnect: false,
-      source: "bootstrap_manager",
-      mapHint: extractMapInfoFromServer(server),
-      modeHint: extractModeInfoFromServer(server),
-      isBootstrap: true
-    };
+  function observeServerPopulation(plugin2, server, client, isDisconnect, source, mapHint, modeHint, isBootstrap) {
+    if (!server) {
+      plugin2.logger.logWarning(
+        "{Name}: Population observation skipped because server was null (source={Source})",
+        plugin2.name,
+        String(source || "unknown")
+      );
+      return;
+    }
+    const serverKey = getServerKey(server);
+    const serverName = cleanName(server.serverName || server.ServerName || server.hostname || server.Hostname || serverKey);
+    setKnownServer(plugin2, serverKey, server);
+    const mapInfo = mergeNamedInfo(
+      mapHint,
+      mergeNamedInfo(extractMapInfoFromServer(server), plugin2.runtime.mapInfoByServer[serverKey])
+    );
+    const modeInfo = mergeNamedInfo(
+      modeHint,
+      mergeNamedInfo(extractModeInfoFromServer(server), plugin2.runtime.modeInfoByServer[serverKey])
+    );
+    setServerMetadata(plugin2, serverKey, mapInfo, modeInfo);
+    if (!wasServerProbeLogged(plugin2, serverKey)) {
+      markServerProbeLogged(plugin2, serverKey);
+      plugin2.logger.logInformation(
+        "{Name}: PROBE server={Server} server_keys={Keys}",
+        plugin2.name,
+        serverKey,
+        listKeys(server, 120)
+      );
+      plugin2.logger.logInformation(
+        "{Name}: PROBE server={Server} map_keys={MapKeys} mode_type={ModeType}",
+        plugin2.name,
+        serverKey,
+        listKeys(server.currentMap || server.CurrentMap || server.map || server.Map, 80),
+        textFromUnknown(server.gameType || server.GameType || server.gametype || server.Gametype || "(none)")
+      );
+    }
+    const activeNetworkIds = ensureActiveNetworkIds(plugin2, serverKey);
+    const networkId = extractNetworkIdFromClient(client);
+    if (networkId) {
+      if (isDisconnect) {
+        delete activeNetworkIds[networkId];
+      } else {
+        activeNetworkIds[networkId] = true;
+      }
+    }
+    const directCount = getPlayerCountFromServer(server);
+    const trackedCount = Object.keys(activeNetworkIds).length;
+    let playerCount = parseIntSafe(directCount, -1);
+    let countSource = "server";
+    if (playerCount < 0) {
+      playerCount = trackedCount;
+      countSource = "tracked_ids";
+    } else if (networkId) {
+      if (isDisconnect && trackedCount < playerCount) {
+        playerCount = trackedCount;
+        countSource = "tracked_ids_disconnect";
+      } else if (!isDisconnect && trackedCount > playerCount) {
+        playerCount = trackedCount;
+        countSource = "tracked_ids_connect";
+      }
+    }
+    if (playerCount < 0) {
+      plugin2.logger.logWarning(
+        "{Name}: Population observation produced invalid count (source={Source}, server={Server})",
+        plugin2.name,
+        String(source || "unknown"),
+        serverKey
+      );
+      return;
+    }
+    setStatusSnapshot(plugin2, serverKey, {
+      serverName,
+      playerCount,
+      mapInfo,
+      modeInfo
+    });
+    ensureStatusMessage(plugin2);
+    evaluatePopulation(plugin2, serverKey, serverName, playerCount, {
+      source: String(source || "unknown"),
+      countSource,
+      directCount,
+      activeCount: trackedCount,
+      networkId,
+      isDisconnect: isDisconnect === true,
+      isBootstrap: isBootstrap === true
+    });
   }
 
-  // src/index.js
-  var PLUGIN_VERSION = true ? "1.0.0" : "0.0.0-dev";
+  // src/infrastructure/host/iw4m-host.ts
+  function resolveHostServices(serviceResolver) {
+    const logger = serviceResolver.resolveService("ILogger", ["ScriptPluginV2"]);
+    let manager = null;
+    try {
+      manager = serviceResolver.resolveService("IManager");
+    } catch (_) {
+      manager = null;
+    }
+    return { logger, manager };
+  }
+
+  // src/app/services/config-lifecycle.ts
   function configsMatch(left, right) {
     try {
       return JSON.stringify(left) === JSON.stringify(right);
     } catch (_) {
       return false;
     }
+  }
+  function initializeConfigLifecycle(plugin2) {
+    plugin2.configWrapper.setName(plugin2.name);
+    const stored = plugin2.configWrapper.getValue("config", (newConfig) => {
+      if (!newConfig) return;
+      plugin2.config = sanitizeConfig(newConfig);
+      plugin2.refreshNotifiers();
+      plugin2.runtime.statusDashboardFingerprint = "";
+      plugin2.logger.logInformation(
+        "{Name}: Config reloaded. alerts={Alerts} notifiers={Notifiers}",
+        plugin2.name,
+        thresholdListText(plugin2.config.alerts),
+        plugin2.notifierNamesText()
+      );
+      plugin2.refreshStatusMessages();
+    });
+    if (stored != null) {
+      const sanitized = sanitizeConfig(stored);
+      plugin2.config = sanitized;
+      if (!configsMatch(stored, sanitized)) {
+        plugin2.configWrapper.setValue("config", sanitized);
+      }
+    } else {
+      plugin2.configWrapper.setValue("config", plugin2.config);
+    }
+  }
+  function logStartupConfig(plugin2) {
+    plugin2.logger.logInformation(
+      "{Name} {Version} by {Author} loaded. alerts={Alerts} max_players={MaxPlayers} notifiers={Notifiers}",
+      plugin2.name,
+      plugin2.version,
+      plugin2.author,
+      thresholdListText(plugin2.config.alerts),
+      MAX_PLAYERS,
+      plugin2.notifierNamesText()
+    );
+    plugin2.logger.logInformation(
+      "{Name}: Discord config token_set={TokenSet} channel_set={ChannelSet}",
+      plugin2.name,
+      plugin2.config.discordBotToken ? "yes" : "no",
+      plugin2.config.discordChannelId ? "yes" : "no"
+    );
+  }
+
+  // src/app/services/command-status.ts
+  function tellStatus(plugin2, commandEvent) {
+    if (!commandEvent || !commandEvent.origin || typeof commandEvent.origin.tell !== "function") return;
+    const keys = Object.keys(plugin2.runtime.populationStateByServer || {});
+    const serverSummaries = [];
+    for (let i = 0; i < keys.length; i++) {
+      const serverKey = keys[i];
+      const state = plugin2.runtime.populationStateByServer[serverKey] || {};
+      const count = state.lastCount == null ? "?" : String(state.lastCount);
+      const hasNotify = plugin2.runtime.notifyMessageIdByServer[serverKey] ? "notify:on" : "notify:off";
+      serverSummaries.push(serverKey + "=" + count + "(" + hasNotify + ")");
+    }
+    const cooldownMinutes = remainingCooldownMinutes(plugin2);
+    const cooldownText = cooldownMinutes > 0 ? cooldownMinutes + "m" : "ready";
+    commandEvent.origin.tell(
+      "Population Notifier v" + plugin2.version + " | alerts=" + thresholdListText(plugin2.config.alerts) + " | notifiers=" + plugin2.notifierNamesText() + " | discord=" + (plugin2.config.discordBotToken && plugin2.config.discordChannelId ? "configured" : "missing") + " | cooldown=" + cooldownText + " | status_msg=" + (plugin2.runtime.statusDashboardMessageId ? "1" : "0") + " | notify_msgs=" + Object.keys(plugin2.runtime.notifyMessageIdByServer || {}).length + " | servers=" + (serverSummaries.length > 0 ? serverSummaries.join(", ") : "(none)")
+    );
+  }
+
+  // src/app/plugin.ts
+  var PLUGIN_VERSION = true ? "1.0.0" : "0.0.0-dev";
+  function observeFromEvent(plugin2, eventObj, source, isDisconnect, isBootstrap) {
+    const observation = normalizeObservationFromEvent(eventObj, {
+      isDisconnect,
+      source,
+      isBootstrap
+    });
+    plugin2.observeServerPopulation(
+      observation.server,
+      observation.client,
+      observation.isDisconnect,
+      observation.source,
+      observation.mapHint,
+      observation.modeHint,
+      observation.isBootstrap
+    );
   }
   var plugin = {
     author: "b_five",
@@ -1916,51 +2236,12 @@ var _b = (() => {
     onLoad: function(serviceResolver, configWrapper, pluginHelper) {
       this.configWrapper = configWrapper;
       this.pluginHelper = pluginHelper;
-      this.logger = serviceResolver.resolveService("ILogger", ["ScriptPluginV2"]);
-      try {
-        this.manager = serviceResolver.resolveService("IManager");
-      } catch (_) {
-        this.manager = null;
-      }
-      this.configWrapper.setName(this.name);
-      const stored = this.configWrapper.getValue("config", (newConfig) => {
-        if (!newConfig) return;
-        this.config = sanitizeConfig(newConfig);
-        this.refreshNotifiers();
-        this.runtime.statusDashboardFingerprint = "";
-        this.logger.logInformation(
-          "{Name}: Config reloaded. alerts={Alerts} notifiers={Notifiers}",
-          this.name,
-          thresholdListText(this.config.alerts),
-          this.notifierNamesText()
-        );
-        this.refreshStatusMessages();
-      });
-      if (stored != null) {
-        const sanitized = sanitizeConfig(stored);
-        this.config = sanitized;
-        if (!configsMatch(stored, sanitized)) {
-          this.configWrapper.setValue("config", sanitized);
-        }
-      } else {
-        this.configWrapper.setValue("config", this.config);
-      }
+      const resolved = resolveHostServices(serviceResolver);
+      this.logger = resolved.logger;
+      this.manager = resolved.manager;
+      initializeConfigLifecycle(this);
       this.refreshNotifiers();
-      this.logger.logInformation(
-        "{Name} {Version} by {Author} loaded. alerts={Alerts} max_players={MaxPlayers} notifiers={Notifiers}",
-        this.name,
-        this.version,
-        this.author,
-        thresholdListText(this.config.alerts),
-        MAX_PLAYERS,
-        this.notifierNamesText()
-      );
-      this.logger.logInformation(
-        "{Name}: Discord config token_set={TokenSet} channel_set={ChannelSet}",
-        this.name,
-        this.config.discordBotToken ? "yes" : "no",
-        this.config.discordChannelId ? "yes" : "no"
-      );
+      logStartupConfig(this);
       if (!this.dispatcher || this.dispatcher.count === 0) {
         this.logger.logWarning("{Name}: No notifier destinations configured. Add discordBotToken and discordChannelId to enable alerts.", this.name);
         this.runtime.missingNotifierWarned = true;
@@ -1976,278 +2257,40 @@ var _b = (() => {
       return this.dispatcher.names.join(",");
     },
     scheduleDelayedBootstrap: function() {
-      if (!this.pluginHelper || typeof this.pluginHelper.requestNotifyAfterDelay !== "function") return;
-      this.pluginHelper.requestNotifyAfterDelay(7e3, () => {
-        this.bootstrapKnownServers();
-      });
+      scheduleDelayedBootstrap(this);
     },
     startBootstrapFlow: function() {
-      if (this.runtime.startupBootstrapStarted) return;
-      this.runtime.startupBootstrapStarted = true;
-      this.bootstrapKnownServers();
-      this.scheduleDelayedBootstrap();
+      startBootstrapFlow(this);
     },
     runStartupPurgeThenBootstrap: function() {
-      if (this.runtime.startupPurgeCompleted) {
-        this.startBootstrapFlow();
-        return;
-      }
-      this.runtime.startupPurgeCompleted = true;
-      if (!this.dispatcher || typeof this.dispatcher.purgeStartupMessages !== "function" || this.dispatcher.count === 0) {
-        this.startBootstrapFlow();
-        return;
-      }
-      this.logger.logInformation("{Name}: Startup purge scanning prior bot-authored Discord messages", this.name);
-      this.dispatcher.purgeStartupMessages(this, (ok, errorText, stats) => {
-        const summary = stats || { scanned: 0, matched: 0, deleted: 0, pages: 0, rateLimited: false };
-        if (ok) {
-          this.logger.logInformation(
-            "{Name}: Startup purge complete scanned={Scanned} matched={Matched} deleted={Deleted} pages={Pages} rate_limited={RateLimited}",
-            this.name,
-            parseIntSafe(summary.scanned, 0),
-            parseIntSafe(summary.matched, 0),
-            parseIntSafe(summary.deleted, 0),
-            parseIntSafe(summary.pages, 0),
-            summary.rateLimited ? "yes" : "no"
-          );
-        } else {
-          this.logger.logWarning(
-            "{Name}: Startup purge failed - {Error} (scanned={Scanned} matched={Matched} deleted={Deleted})",
-            this.name,
-            String(errorText || "unknown startup purge error"),
-            parseIntSafe(summary.scanned, 0),
-            parseIntSafe(summary.matched, 0),
-            parseIntSafe(summary.deleted, 0)
-          );
-        }
-        this.startBootstrapFlow();
-      });
+      runStartupPurgeThenBootstrap(this);
     },
     bootstrapKnownServers: function() {
-      const servers = collectServersFromManager(this.manager);
-      this.logger.logInformation(
-        "{Name}: bootstrapKnownServers discovered {Count} server(s) from manager",
-        this.name,
-        servers.length
-      );
-      for (let i = 0; i < servers.length; i++) {
-        const observation = normalizeBootstrapObservation(servers[i]);
-        this.observeServerPopulation(
-          observation.server,
-          observation.client,
-          observation.isDisconnect,
-          observation.source,
-          observation.mapHint,
-          observation.modeHint,
-          observation.isBootstrap
-        );
-      }
+      bootstrapKnownServers(this);
     },
     refreshStatusMessages: function() {
-      const keys = Object.keys(this.runtime.populationStateByServer || {});
-      clearStatusSnapshots(this);
-      for (let i = 0; i < keys.length; i++) {
-        const serverKey = keys[i];
-        const server = this.runtime.serverByKey[serverKey];
-        if (!server) continue;
-        const state = this.runtime.populationStateByServer[serverKey] || {};
-        const count = parseIntSafe(state.lastCount, 0);
-        const serverName = cleanName(server.serverName || server.ServerName || server.hostname || server.Hostname || serverKey);
-        const mapInfo = mergeNamedInfo(this.runtime.mapInfoByServer[serverKey], extractMapInfoFromServer(server));
-        const modeInfo = mergeNamedInfo(this.runtime.modeInfoByServer[serverKey], extractModeInfoFromServer(server));
-        setStatusSnapshot(this, serverKey, {
-          serverName,
-          playerCount: count,
-          mapInfo,
-          modeInfo
-        });
-      }
-      ensureStatusMessage(this);
+      refreshStatusMessages(this);
     },
     onClientStateInitialized: function(eventObj) {
-      const observation = normalizeObservationFromEvent(eventObj, {
-        isDisconnect: false,
-        source: "client_state_initialized",
-        isBootstrap: false
-      });
-      this.observeServerPopulation(
-        observation.server,
-        observation.client,
-        observation.isDisconnect,
-        observation.source,
-        observation.mapHint,
-        observation.modeHint,
-        observation.isBootstrap
-      );
+      observeFromEvent(this, eventObj, "client_state_initialized", false, false);
     },
     onClientStateDisposed: function(eventObj) {
-      const observation = normalizeObservationFromEvent(eventObj, {
-        isDisconnect: true,
-        source: "client_state_disposed",
-        isBootstrap: false
-      });
-      this.observeServerPopulation(
-        observation.server,
-        observation.client,
-        observation.isDisconnect,
-        observation.source,
-        observation.mapHint,
-        observation.modeHint,
-        observation.isBootstrap
-      );
+      observeFromEvent(this, eventObj, "client_state_disposed", true, false);
     },
     onServerMonitoringStarted: function(eventObj) {
-      const observation = normalizeObservationFromEvent(eventObj, {
-        isDisconnect: false,
-        source: "monitoring_started",
-        isBootstrap: true
-      });
-      this.observeServerPopulation(
-        observation.server,
-        observation.client,
-        observation.isDisconnect,
-        observation.source,
-        observation.mapHint,
-        observation.modeHint,
-        observation.isBootstrap
-      );
+      observeFromEvent(this, eventObj, "monitoring_started", false, true);
     },
     onMatchStarted: function(eventObj) {
-      const observation = normalizeObservationFromEvent(eventObj, {
-        isDisconnect: false,
-        source: "match_started",
-        isBootstrap: false
-      });
-      this.observeServerPopulation(
-        observation.server,
-        observation.client,
-        observation.isDisconnect,
-        observation.source,
-        observation.mapHint,
-        observation.modeHint,
-        observation.isBootstrap
-      );
+      observeFromEvent(this, eventObj, "match_started", false, false);
     },
     onMatchEnded: function(eventObj) {
-      const observation = normalizeObservationFromEvent(eventObj, {
-        isDisconnect: false,
-        source: "match_ended",
-        isBootstrap: false
-      });
-      this.observeServerPopulation(
-        observation.server,
-        observation.client,
-        observation.isDisconnect,
-        observation.source,
-        observation.mapHint,
-        observation.modeHint,
-        observation.isBootstrap
-      );
+      observeFromEvent(this, eventObj, "match_ended", false, false);
     },
     observeServerPopulation: function(server, client, isDisconnect, source, mapHint, modeHint, isBootstrap) {
-      if (!server) {
-        this.logger.logWarning(
-          "{Name}: Population observation skipped because server was null (source={Source})",
-          this.name,
-          String(source || "unknown")
-        );
-        return;
-      }
-      const serverKey = getServerKey(server);
-      const serverName = cleanName(server.serverName || server.ServerName || server.hostname || server.Hostname || serverKey);
-      setKnownServer(this, serverKey, server);
-      const mapInfo = mergeNamedInfo(
-        mapHint,
-        mergeNamedInfo(extractMapInfoFromServer(server), this.runtime.mapInfoByServer[serverKey])
-      );
-      const modeInfo = mergeNamedInfo(
-        modeHint,
-        mergeNamedInfo(extractModeInfoFromServer(server), this.runtime.modeInfoByServer[serverKey])
-      );
-      setServerMetadata(this, serverKey, mapInfo, modeInfo);
-      if (!wasServerProbeLogged(this, serverKey)) {
-        markServerProbeLogged(this, serverKey);
-        this.logger.logInformation(
-          "{Name}: PROBE server={Server} server_keys={Keys}",
-          this.name,
-          serverKey,
-          listKeys(server, 120)
-        );
-        this.logger.logInformation(
-          "{Name}: PROBE server={Server} map_keys={MapKeys} mode_type={ModeType}",
-          this.name,
-          serverKey,
-          listKeys(server.currentMap || server.CurrentMap || server.map || server.Map, 80),
-          textFromUnknown(server.gameType || server.GameType || server.gametype || server.Gametype || "(none)")
-        );
-      }
-      const activeNetworkIds = ensureActiveNetworkIds(this, serverKey);
-      const networkId = extractNetworkIdFromClient(client);
-      if (networkId) {
-        if (isDisconnect) {
-          delete activeNetworkIds[networkId];
-        } else {
-          activeNetworkIds[networkId] = true;
-        }
-      }
-      const directCount = getPlayerCountFromServer(server);
-      const trackedCount = Object.keys(activeNetworkIds).length;
-      let playerCount = parseIntSafe(directCount, -1);
-      let countSource = "server";
-      if (playerCount < 0) {
-        playerCount = trackedCount;
-        countSource = "tracked_ids";
-      } else if (networkId) {
-        if (isDisconnect && trackedCount < playerCount) {
-          playerCount = trackedCount;
-          countSource = "tracked_ids_disconnect";
-        } else if (!isDisconnect && trackedCount > playerCount) {
-          playerCount = trackedCount;
-          countSource = "tracked_ids_connect";
-        }
-      }
-      if (playerCount < 0) {
-        this.logger.logWarning(
-          "{Name}: Population observation produced invalid count (source={Source}, server={Server})",
-          this.name,
-          String(source || "unknown"),
-          serverKey
-        );
-        return;
-      }
-      setStatusSnapshot(this, serverKey, {
-        serverName,
-        playerCount,
-        mapInfo,
-        modeInfo
-      });
-      ensureStatusMessage(this);
-      evaluatePopulation(this, serverKey, serverName, playerCount, {
-        source: String(source || "unknown"),
-        countSource,
-        directCount,
-        activeCount: trackedCount,
-        networkId,
-        isDisconnect: isDisconnect === true,
-        isBootstrap: isBootstrap === true
-      });
+      observeServerPopulation(this, server, client, isDisconnect, source, mapHint, modeHint, isBootstrap);
     },
     tellStatus: function(commandEvent) {
-      if (!commandEvent || !commandEvent.origin || typeof commandEvent.origin.tell !== "function") return;
-      const keys = Object.keys(this.runtime.populationStateByServer || {});
-      const serverSummaries = [];
-      for (let i = 0; i < keys.length; i++) {
-        const serverKey = keys[i];
-        const state = this.runtime.populationStateByServer[serverKey] || {};
-        const count = state.lastCount == null ? "?" : String(state.lastCount);
-        const hasNotify = this.runtime.notifyMessageIdByServer[serverKey] ? "notify:on" : "notify:off";
-        serverSummaries.push(serverKey + "=" + count + "(" + hasNotify + ")");
-      }
-      const cooldownMinutes = remainingCooldownMinutes(this);
-      const cooldownText = cooldownMinutes > 0 ? cooldownMinutes + "m" : "ready";
-      commandEvent.origin.tell(
-        "Population Notifier v" + this.version + " | alerts=" + thresholdListText(this.config.alerts) + " | notifiers=" + this.notifierNamesText() + " | discord=" + (this.config.discordBotToken && this.config.discordChannelId ? "configured" : "missing") + " | cooldown=" + cooldownText + " | status_msg=" + (this.runtime.statusDashboardMessageId ? "1" : "0") + " | notify_msgs=" + Object.keys(this.runtime.notifyMessageIdByServer || {}).length + " | servers=" + (serverSummaries.length > 0 ? serverSummaries.join(", ") : "(none)")
-      );
+      tellStatus(this, commandEvent);
     }
   };
   var init = (registerNotify, serviceResolver, configWrapper, pluginHelper) => {
