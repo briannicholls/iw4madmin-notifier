@@ -147,7 +147,8 @@ var _b = (() => {
   var defaultConfig = {
     alerts: DEFAULT_ALERTS.map(copyAlert),
     discordBotToken: "",
-    discordChannelId: ""
+    discordChannelId: "",
+    discordRoleId: ""
   };
   function copyAlert(alert) {
     return {
@@ -202,7 +203,8 @@ var _b = (() => {
     return {
       alerts: sanitizeAlerts(source.alerts),
       discordBotToken: String(source.discordBotToken == null ? "" : source.discordBotToken).trim(),
-      discordChannelId: String(source.discordChannelId == null ? "" : source.discordChannelId).trim()
+      discordChannelId: String(source.discordChannelId == null ? "" : source.discordChannelId).trim(),
+      discordRoleId: String(source.discordRoleId == null ? "" : source.discordRoleId).trim()
     };
   }
   function thresholdListText(alerts) {
@@ -548,6 +550,9 @@ var _b = (() => {
     if (value >= 1e3) return Math.round(value);
     return Math.round(value * 1e3);
   }
+  function parseDiscordErrorCode(parsed) {
+    return parseDiscordCode(parsed);
+  }
   function isMissingMessageResponse(statusCode, parsed) {
     if (statusCode === 404) return true;
     return parseDiscordCode(parsed) === 10008;
@@ -558,6 +563,10 @@ var _b = (() => {
       return /rate\s*limited/i.test(parsed.message);
     }
     return false;
+  }
+  function isRetryableStatusCode(statusCode) {
+    if (!Number.isFinite(statusCode)) return false;
+    return statusCode === 429 || statusCode >= 500;
   }
   function tryParseJson(text) {
     const body = String(text == null ? "" : text).trim();
@@ -589,6 +598,20 @@ var _b = (() => {
     if (id) return true;
     if (!text || String(text).trim() === "") return true;
     return false;
+  }
+  function computeRetryDelayMs(details, attemptNumber, defaultDelayMs, maxDelayMs) {
+    const retryAfterMs = Number(details && details.retryAfterMs);
+    if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+      return Math.max(1e3, Math.min(maxDelayMs, Math.round(retryAfterMs)));
+    }
+    const statusCode = Number(details && details.statusCode);
+    const isRateLimited = !!(details && details.isRateLimited);
+    if (isRateLimited || isRetryableStatusCode(statusCode)) {
+      const attempt = Math.max(1, Number.isFinite(Number(attemptNumber)) ? Number(attemptNumber) : 1);
+      const baseDelay = Math.round(defaultDelayMs * attempt);
+      return Math.max(1e3, Math.min(maxDelayMs, baseDelay));
+    }
+    return 0;
   }
   function buildErrorText(statusCode, parsed, text) {
     if (parsed && typeof parsed.message === "string" && parsed.message) {
@@ -671,6 +694,12 @@ var _b = (() => {
     if (!botToken || !channelId) return null;
     const headers = createHeaders(botToken);
     const createUrl = "https://discord.com/api/v10/channels/" + channelId + "/messages";
+    const meUrl = "https://discord.com/api/v10/users/@me";
+    const channelMessagesUrl = "https://discord.com/api/v10/channels/" + channelId + "/messages";
+    const STARTUP_PURGE_FETCH_MAX_ATTEMPTS = 4;
+    const STARTUP_PURGE_DELETE_MAX_ATTEMPTS = 4;
+    const STARTUP_PURGE_RETRY_DEFAULT_MS = 5e3;
+    const STARTUP_PURGE_RETRY_MAX_MS = 6e4;
     function createMessage(plugin2, payload, meta, done) {
       requestJson(plugin2, createUrl, "POST", payload, headers, function(result) {
         if (!result.ok) {
@@ -709,6 +738,196 @@ var _b = (() => {
           isMissingMessage: false
         });
       });
+    }
+    function getCurrentBotUserId(plugin2, done) {
+      requestJson(plugin2, meUrl, "GET", null, headers, function(result) {
+        if (!result.ok) {
+          done(false, "", result.errorText || "failed to query bot identity", {
+            statusCode: result.statusCode,
+            retryAfterMs: result.retryAfterMs,
+            isRateLimited: result.isRateLimited,
+            isMissingMessage: false,
+            discordCode: parseDiscordErrorCode(result.parsed)
+          });
+          return;
+        }
+        const parsed = result.parsed || {};
+        const botUserId = String(parsed.id || "").trim();
+        if (!botUserId) {
+          done(false, "", "discord bot identity response missing id", {
+            statusCode: result.statusCode,
+            retryAfterMs: 0,
+            isRateLimited: false,
+            isMissingMessage: false,
+            discordCode: 0
+          });
+          return;
+        }
+        done(true, botUserId, "", {
+          statusCode: result.statusCode,
+          retryAfterMs: 0,
+          isRateLimited: false,
+          isMissingMessage: false,
+          discordCode: 0
+        });
+      });
+    }
+    function listChannelMessages(plugin2, beforeMessageId, done) {
+      let url = channelMessagesUrl + "?limit=100";
+      if (beforeMessageId) {
+        url += "&before=" + encodeURIComponent(String(beforeMessageId));
+      }
+      requestJson(plugin2, url, "GET", null, headers, function(result) {
+        if (!result.ok) {
+          done(false, [], result.errorText || "discord list messages failed", {
+            statusCode: result.statusCode,
+            retryAfterMs: result.retryAfterMs,
+            isRateLimited: result.isRateLimited,
+            isMissingMessage: false,
+            discordCode: parseDiscordErrorCode(result.parsed)
+          });
+          return;
+        }
+        const messages = Array.isArray(result.parsed) ? result.parsed : [];
+        done(true, messages, "", {
+          statusCode: result.statusCode,
+          retryAfterMs: 0,
+          isRateLimited: false,
+          isMissingMessage: false,
+          discordCode: 0
+        });
+      });
+    }
+    function deleteMessageWithRetry(plugin2, messageId, attemptNumber, done) {
+      const attempt = Math.max(1, Number(attemptNumber || 1));
+      const url = createUrl + "/" + String(messageId);
+      requestJson(plugin2, url, "DELETE", null, headers, function(result) {
+        if (result.ok || result.isMissingMessage) {
+          done(true, "", {
+            statusCode: result.statusCode,
+            retryAfterMs: 0,
+            isRateLimited: false,
+            isMissingMessage: !!result.isMissingMessage,
+            discordCode: parseDiscordErrorCode(result.parsed)
+          });
+          return;
+        }
+        const details = {
+          statusCode: result.statusCode,
+          retryAfterMs: result.retryAfterMs,
+          isRateLimited: result.isRateLimited,
+          isMissingMessage: result.isMissingMessage,
+          discordCode: parseDiscordErrorCode(result.parsed)
+        };
+        const retryDelayMs = computeRetryDelayMs(details, attempt, STARTUP_PURGE_RETRY_DEFAULT_MS, STARTUP_PURGE_RETRY_MAX_MS);
+        const shouldRetry = retryDelayMs > 0 && attempt < STARTUP_PURGE_DELETE_MAX_ATTEMPTS;
+        if (shouldRetry && plugin2.pluginHelper && typeof plugin2.pluginHelper.requestNotifyAfterDelay === "function") {
+          plugin2.logger.logWarning(
+            "{Name}: Discord startup purge delete retry scheduled message_id={MessageId} attempt={Attempt} retry_ms={RetryMs}",
+            plugin2.name,
+            String(messageId),
+            attempt + 1,
+            retryDelayMs
+          );
+          plugin2.pluginHelper.requestNotifyAfterDelay(retryDelayMs, function() {
+            deleteMessageWithRetry(plugin2, messageId, attempt + 1, done);
+          });
+          return;
+        }
+        plugin2.logger.logWarning(
+          "{Name}: Discord startup purge delete failed message_id={MessageId} error={Error}",
+          plugin2.name,
+          String(messageId),
+          result.errorText || "unknown discord delete error"
+        );
+        done(false, result.errorText || "discord delete failed", details);
+      });
+    }
+    function purgeChannelMessagesByAuthor(plugin2, authorId, done) {
+      const stats = {
+        scanned: 0,
+        matched: 0,
+        deleted: 0,
+        pages: 0,
+        rateLimited: false
+      };
+      function deleteMatchingMessages(messageIds, index, onDone) {
+        if (index >= messageIds.length) {
+          onDone();
+          return;
+        }
+        const messageId = String(messageIds[index] || "");
+        if (!messageId) {
+          deleteMatchingMessages(messageIds, index + 1, onDone);
+          return;
+        }
+        deleteMessageWithRetry(plugin2, messageId, 1, function(ok, errorText, details) {
+          if (details && details.isRateLimited) stats.rateLimited = true;
+          if (ok) {
+            stats.deleted += 1;
+            deleteMatchingMessages(messageIds, index + 1, onDone);
+            return;
+          }
+          plugin2.logger.logWarning(
+            "{Name}: Startup purge could not delete message_id={MessageId} error={Error}",
+            plugin2.name,
+            messageId,
+            String(errorText || "unknown startup purge delete error")
+          );
+          deleteMatchingMessages(messageIds, index + 1, onDone);
+        });
+      }
+      function fetchPage(beforeMessageId, attemptNumber) {
+        const fetchAttempt = Math.max(1, Number(attemptNumber || 1));
+        listChannelMessages(plugin2, beforeMessageId, function(ok, messages, errorText, details) {
+          if (!ok) {
+            if (details && details.isRateLimited) stats.rateLimited = true;
+            const retryDelayMs = computeRetryDelayMs(details, fetchAttempt, STARTUP_PURGE_RETRY_DEFAULT_MS, STARTUP_PURGE_RETRY_MAX_MS);
+            const shouldRetry = retryDelayMs > 0 && fetchAttempt < STARTUP_PURGE_FETCH_MAX_ATTEMPTS;
+            if (shouldRetry && plugin2.pluginHelper && typeof plugin2.pluginHelper.requestNotifyAfterDelay === "function") {
+              plugin2.logger.logWarning(
+                "{Name}: Discord startup purge list retry scheduled attempt={Attempt} retry_ms={RetryMs}",
+                plugin2.name,
+                fetchAttempt + 1,
+                retryDelayMs
+              );
+              plugin2.pluginHelper.requestNotifyAfterDelay(retryDelayMs, function() {
+                fetchPage(beforeMessageId, fetchAttempt + 1);
+              });
+              return;
+            }
+            done(false, errorText || "discord list messages failed", stats);
+            return;
+          }
+          stats.pages += 1;
+          stats.scanned += messages.length;
+          if (messages.length === 0) {
+            done(true, "", stats);
+            return;
+          }
+          const matchingIds = [];
+          for (let i = 0; i < messages.length; i++) {
+            const current = messages[i] || {};
+            const messageId = String(current.id || "").trim();
+            if (!messageId) continue;
+            const currentAuthorId = String(current.author && current.author.id ? current.author.id : "").trim();
+            if (currentAuthorId === String(authorId)) {
+              matchingIds.push(messageId);
+            }
+          }
+          stats.matched += matchingIds.length;
+          const oldest = messages[messages.length - 1] || {};
+          const nextBefore = String(oldest.id || "").trim();
+          deleteMatchingMessages(matchingIds, 0, function() {
+            if (!nextBefore) {
+              done(true, "", stats);
+              return;
+            }
+            fetchPage(nextBefore, 1);
+          });
+        });
+      }
+      fetchPage("", 1);
     }
     return {
       name: "discord",
@@ -832,6 +1051,39 @@ var _b = (() => {
             isMissingMessage: false
           });
         });
+      },
+      purgeStartupMessages: function(plugin2, done) {
+        getCurrentBotUserId(plugin2, function(ok, botUserId, errorText, details) {
+          if (!ok) {
+            done(false, errorText || "failed to resolve bot identity", {
+              scanned: 0,
+              matched: 0,
+              deleted: 0,
+              pages: 0,
+              rateLimited: !!(details && details.isRateLimited)
+            });
+            return;
+          }
+          purgeChannelMessagesByAuthor(plugin2, botUserId, function(purgeOk, purgeErrorText, stats) {
+            if (!purgeOk) {
+              done(false, purgeErrorText || "startup purge failed", stats || {
+                scanned: 0,
+                matched: 0,
+                deleted: 0,
+                pages: 0,
+                rateLimited: false
+              });
+              return;
+            }
+            done(true, "", stats || {
+              scanned: 0,
+              matched: 0,
+              deleted: 0,
+              pages: 0,
+              rateLimited: false
+            });
+          });
+        });
       }
     };
   }
@@ -861,6 +1113,18 @@ var _b = (() => {
         }
         const primary = notifiers[0];
         primary.deleteMessage(plugin2, messageId, meta || {}, done);
+      },
+      purgeStartupMessages: function(plugin2, done) {
+        if (notifiers.length === 0) {
+          done(true, "", { scanned: 0, matched: 0, deleted: 0, pages: 0, rateLimited: false });
+          return;
+        }
+        const primary = notifiers[0];
+        if (typeof primary.purgeStartupMessages !== "function") {
+          done(true, "", { scanned: 0, matched: 0, deleted: 0, pages: 0, rateLimited: false });
+          return;
+        }
+        primary.purgeStartupMessages(plugin2, done);
       }
     };
   }
@@ -1232,7 +1496,7 @@ var _b = (() => {
     );
     dispatchNotifyDeleteWithRetry(plugin2, serverKey, messageId, source, 1);
   }
-  function buildNotifyPayload(alert, serverKey, serverName, playerCount) {
+  function buildNotifyPayload(plugin2, alert, serverKey, serverName, playerCount) {
     const threshold = parseIntSafe(alert.threshold, 0);
     const context = buildMessageContext(serverName, serverKey, playerCount, threshold);
     let sentence = formatPopulationMessage(alert.message, context);
@@ -1243,16 +1507,33 @@ var _b = (() => {
     if (!/[.!?]$/.test(sentence)) {
       sentence += ".";
     }
-    const content = NOTIFY_MENTION_PREFIX + " " + sentence;
+    const mentionData = buildNotifyMentionData(plugin2);
+    const content = mentionData.prefix + " " + sentence;
     return {
       content,
-      allowed_mentions: {
+      allowed_mentions: mentionData.allowedMentions
+    };
+  }
+  function buildNotifyMentionData(plugin2) {
+    const roleId = String(plugin2 && plugin2.config && plugin2.config.discordRoleId ? plugin2.config.discordRoleId : "").trim();
+    if (roleId) {
+      return {
+        prefix: "<@&" + roleId + ">",
+        allowedMentions: {
+          parse: [],
+          roles: [roleId]
+        }
+      };
+    }
+    return {
+      prefix: NOTIFY_MENTION_PREFIX,
+      allowedMentions: {
         parse: ["everyone"]
       }
     };
   }
   function sendNotifyMessage(plugin2, alert, serverKey, serverName, playerCount, isStartup, source, done, attempt) {
-    const payload = buildNotifyPayload(alert, serverKey, serverName, playerCount);
+    const payload = buildNotifyPayload(plugin2, alert, serverKey, serverName, playerCount);
     const existingMessageId = plugin2.runtime.notifyMessageIdByServer[serverKey] || "";
     const attemptNumber = parseIntSafe(attempt, 1);
     plugin2.logger.logInformation(
@@ -1428,7 +1709,9 @@ var _b = (() => {
       notifyDeleteInFlightByServer: {},
       globalNotifyLastAtMs: 0,
       globalNotifyDispatchInFlight: false,
-      missingNotifierWarned: false
+      missingNotifierWarned: false,
+      startupPurgeCompleted: false,
+      startupBootstrapStarted: false
     };
   }
   function ensureServerPopulationState(plugin2, serverKey) {
@@ -1682,8 +1965,7 @@ var _b = (() => {
         this.logger.logWarning("{Name}: No notifier destinations configured. Add discordBotToken and discordChannelId to enable alerts.", this.name);
         this.runtime.missingNotifierWarned = true;
       }
-      this.bootstrapKnownServers();
-      this.scheduleDelayedBootstrap();
+      this.runStartupPurgeThenBootstrap();
     },
     refreshNotifiers: function() {
       this.dispatcher = createNotificationDispatcher(this.config);
@@ -1697,6 +1979,48 @@ var _b = (() => {
       if (!this.pluginHelper || typeof this.pluginHelper.requestNotifyAfterDelay !== "function") return;
       this.pluginHelper.requestNotifyAfterDelay(7e3, () => {
         this.bootstrapKnownServers();
+      });
+    },
+    startBootstrapFlow: function() {
+      if (this.runtime.startupBootstrapStarted) return;
+      this.runtime.startupBootstrapStarted = true;
+      this.bootstrapKnownServers();
+      this.scheduleDelayedBootstrap();
+    },
+    runStartupPurgeThenBootstrap: function() {
+      if (this.runtime.startupPurgeCompleted) {
+        this.startBootstrapFlow();
+        return;
+      }
+      this.runtime.startupPurgeCompleted = true;
+      if (!this.dispatcher || typeof this.dispatcher.purgeStartupMessages !== "function" || this.dispatcher.count === 0) {
+        this.startBootstrapFlow();
+        return;
+      }
+      this.logger.logInformation("{Name}: Startup purge scanning prior bot-authored Discord messages", this.name);
+      this.dispatcher.purgeStartupMessages(this, (ok, errorText, stats) => {
+        const summary = stats || { scanned: 0, matched: 0, deleted: 0, pages: 0, rateLimited: false };
+        if (ok) {
+          this.logger.logInformation(
+            "{Name}: Startup purge complete scanned={Scanned} matched={Matched} deleted={Deleted} pages={Pages} rate_limited={RateLimited}",
+            this.name,
+            parseIntSafe(summary.scanned, 0),
+            parseIntSafe(summary.matched, 0),
+            parseIntSafe(summary.deleted, 0),
+            parseIntSafe(summary.pages, 0),
+            summary.rateLimited ? "yes" : "no"
+          );
+        } else {
+          this.logger.logWarning(
+            "{Name}: Startup purge failed - {Error} (scanned={Scanned} matched={Matched} deleted={Deleted})",
+            this.name,
+            String(errorText || "unknown startup purge error"),
+            parseIntSafe(summary.scanned, 0),
+            parseIntSafe(summary.matched, 0),
+            parseIntSafe(summary.deleted, 0)
+          );
+        }
+        this.startBootstrapFlow();
       });
     },
     bootstrapKnownServers: function() {

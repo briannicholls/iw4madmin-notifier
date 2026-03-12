@@ -10,6 +10,7 @@ function createPluginFixture() {
     delayed,
     plugin: {
       name: 'Population Notifier',
+      config: {},
       runtime: {
         notifyMessageIdByServer: {},
         notifyDeleteInFlightByServer: {},
@@ -82,4 +83,59 @@ test('maybeDeleteNotifyForLowPopulation retries then clears tracked notify', () 
   assert.equal(attempts, 2);
   assert.equal(fixture.plugin.runtime.notifyDeleteInFlightByServer.s1, false);
   assert.equal(fixture.plugin.runtime.notifyMessageIdByServer.s1, undefined);
+});
+
+test('handleThresholdCrossing uses configured discordRoleId mention', () => {
+  const fixture = createPluginFixture();
+  fixture.plugin.config.discordRoleId = '987654321098765432';
+  let capturedPayload = null;
+
+  fixture.plugin.dispatcher.upsertMessage = (_plugin, _existingId, payload, _meta, done) => {
+    capturedPayload = payload;
+    done(true, 'message-role', '', { statusCode: 200 });
+  };
+
+  handleThresholdCrossing(
+    fixture.plugin,
+    { threshold: 6, message: '{serverName} reached {playerCount}/{maxPlayers}' },
+    's1',
+    'Server 1',
+    7,
+    false,
+    'test'
+  );
+
+  assert.ok(capturedPayload);
+  assert.match(capturedPayload.content, /^<@&987654321098765432>\s/);
+  assert.deepEqual(capturedPayload.allowed_mentions, {
+    parse: [],
+    roles: ['987654321098765432']
+  });
+});
+
+test('handleThresholdCrossing falls back to @here mention when discordRoleId is unset', () => {
+  const fixture = createPluginFixture();
+  fixture.plugin.config.discordRoleId = '';
+  let capturedPayload = null;
+
+  fixture.plugin.dispatcher.upsertMessage = (_plugin, _existingId, payload, _meta, done) => {
+    capturedPayload = payload;
+    done(true, 'message-here', '', { statusCode: 200 });
+  };
+
+  handleThresholdCrossing(
+    fixture.plugin,
+    { threshold: 1, message: '{serverName} is active' },
+    's1',
+    'Server 1',
+    2,
+    false,
+    'test'
+  );
+
+  assert.ok(capturedPayload);
+  assert.match(capturedPayload.content, /^@here\s/);
+  assert.deepEqual(capturedPayload.allowed_mentions, {
+    parse: ['everyone']
+  });
 });

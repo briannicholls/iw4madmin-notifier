@@ -62,7 +62,7 @@ export function maybeDeleteNotifyForLowPopulation(plugin, serverKey, playerCount
   dispatchNotifyDeleteWithRetry(plugin, serverKey, messageId, source, 1);
 }
 
-function buildNotifyPayload(alert, serverKey, serverName, playerCount) {
+function buildNotifyPayload(plugin, alert, serverKey, serverName, playerCount) {
   const threshold = parseIntSafe(alert.threshold, 0);
   const context = buildMessageContext(serverName, serverKey, playerCount, threshold);
   let sentence = formatPopulationMessage(alert.message, context);
@@ -74,18 +74,37 @@ function buildNotifyPayload(alert, serverKey, serverName, playerCount) {
     sentence += '.';
   }
 
-  const content = NOTIFY_MENTION_PREFIX + ' ' + sentence;
+  const mentionData = buildNotifyMentionData(plugin);
+  const content = mentionData.prefix + ' ' + sentence;
 
   return {
     content: content,
-    allowed_mentions: {
+    allowed_mentions: mentionData.allowedMentions
+  };
+}
+
+function buildNotifyMentionData(plugin) {
+  const roleId = String(plugin && plugin.config && plugin.config.discordRoleId ? plugin.config.discordRoleId : '').trim();
+  if (roleId) {
+    return {
+      prefix: '<@&' + roleId + '>',
+      allowedMentions: {
+        parse: [],
+        roles: [roleId]
+      }
+    };
+  }
+
+  return {
+    prefix: NOTIFY_MENTION_PREFIX,
+    allowedMentions: {
       parse: ['everyone']
     }
   };
 }
 
 function sendNotifyMessage(plugin, alert, serverKey, serverName, playerCount, isStartup, source, done, attempt) {
-  const payload = buildNotifyPayload(alert, serverKey, serverName, playerCount);
+  const payload = buildNotifyPayload(plugin, alert, serverKey, serverName, playerCount);
   const existingMessageId = plugin.runtime.notifyMessageIdByServer[serverKey] || '';
   const attemptNumber = parseIntSafe(attempt, 1);
 
