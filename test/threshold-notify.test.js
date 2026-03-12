@@ -13,8 +13,9 @@ function createPluginFixture() {
       config: {},
       runtime: {
         notifyMessageIdByServer: {},
+        notifyThresholdByServer: {},
+        notifyLastAtMsByKey: {},
         notifyDeleteInFlightByServer: {},
-        globalNotifyLastAtMs: 0,
         globalNotifyDispatchInFlight: false,
         missingNotifierWarned: false
       },
@@ -47,7 +48,7 @@ test('handleThresholdCrossing sets cooldown only after successful retry', async 
   };
 
   handleThresholdCrossing(fixture.plugin, { threshold: 6, message: '{serverName} active' }, 's1', 'Server 1', 7, false, 'test');
-  assert.equal(fixture.plugin.runtime.globalNotifyLastAtMs, 0);
+  assert.equal(fixture.plugin.runtime.notifyLastAtMsByKey['s1:6'] || 0, 0);
   assert.equal(fixture.plugin.runtime.globalNotifyDispatchInFlight, true);
   assert.equal(fixture.delayed.length, 1);
 
@@ -56,13 +57,56 @@ test('handleThresholdCrossing sets cooldown only after successful retry', async 
 
   assert.equal(attempts, 2);
   assert.equal(fixture.plugin.runtime.globalNotifyDispatchInFlight, false);
-  assert.ok(fixture.plugin.runtime.globalNotifyLastAtMs > 0);
+  assert.ok(fixture.plugin.runtime.notifyLastAtMsByKey['s1:6'] > 0);
+  assert.equal(fixture.plugin.runtime.notifyThresholdByServer.s1, 6);
   assert.equal(fixture.plugin.runtime.notifyMessageIdByServer.s1, 'message-123');
+});
+
+test('handleThresholdCrossing enforces cooldown per threshold key', () => {
+  const fixture = createPluginFixture();
+  let attempts = 0;
+  fixture.plugin.dispatcher.upsertMessage = (_plugin, _existingId, _payload, _meta, done) => {
+    attempts += 1;
+    done(true, 'message-' + attempts, '', { statusCode: 200, retryAfterMs: 0 });
+  };
+
+  handleThresholdCrossing(fixture.plugin, { threshold: 6, message: '{serverName} active' }, 's1', 'Server 1', 7, false, 'test');
+  handleThresholdCrossing(fixture.plugin, { threshold: 6, message: '{serverName} active' }, 's1', 'Server 1', 7, false, 'test');
+  handleThresholdCrossing(fixture.plugin, { threshold: 8, message: '{serverName} very active' }, 's1', 'Server 1', 9, false, 'test');
+
+  assert.equal(attempts, 2);
+  assert.ok(fixture.plugin.runtime.notifyLastAtMsByKey['s1:6'] > 0);
+  assert.ok(fixture.plugin.runtime.notifyLastAtMsByKey['s1:8'] > 0);
+});
+
+test('handleThresholdCrossing replaces lower-threshold message after higher-threshold send', () => {
+  const fixture = createPluginFixture();
+  const upsertCalls = [];
+  const deletedMessageIds = [];
+
+  fixture.plugin.dispatcher.upsertMessage = (_plugin, existingId, _payload, _meta, done) => {
+    upsertCalls.push(existingId);
+    const nextId = upsertCalls.length === 1 ? 'message-low' : 'message-high';
+    done(true, nextId, '', { statusCode: 200, retryAfterMs: 0 });
+  };
+  fixture.plugin.dispatcher.deleteMessage = (_plugin, messageId, _meta, done) => {
+    deletedMessageIds.push(messageId);
+    done(true, '', { statusCode: 204 });
+  };
+
+  handleThresholdCrossing(fixture.plugin, { threshold: 6, message: '{serverName} active' }, 's1', 'Server 1', 7, false, 'test');
+  handleThresholdCrossing(fixture.plugin, { threshold: 8, message: '{serverName} very active' }, 's1', 'Server 1', 9, false, 'test');
+
+  assert.deepEqual(upsertCalls, ['', '']);
+  assert.deepEqual(deletedMessageIds, ['message-low']);
+  assert.equal(fixture.plugin.runtime.notifyMessageIdByServer.s1, 'message-high');
+  assert.equal(fixture.plugin.runtime.notifyThresholdByServer.s1, 8);
 });
 
 test('maybeDeleteNotifyForLowPopulation retries then clears tracked notify', () => {
   const fixture = createPluginFixture();
   fixture.plugin.runtime.notifyMessageIdByServer.s1 = 'message-1';
+  fixture.plugin.runtime.notifyThresholdByServer.s1 = 6;
   let attempts = 0;
   fixture.plugin.dispatcher.deleteMessage = (_plugin, _messageId, _meta, done) => {
     attempts += 1;
@@ -83,6 +127,16 @@ test('maybeDeleteNotifyForLowPopulation retries then clears tracked notify', () 
   assert.equal(attempts, 2);
   assert.equal(fixture.plugin.runtime.notifyDeleteInFlightByServer.s1, false);
   assert.equal(fixture.plugin.runtime.notifyMessageIdByServer.s1, undefined);
+  assert.equal(fixture.plugin.runtime.notifyThresholdByServer.s1, undefined);
+});
+
+test('maybeDeleteNotifyForLowPopulation clears tracked threshold even without active message', () => {
+  const fixture = createPluginFixture();
+  fixture.plugin.runtime.notifyThresholdByServer.s1 = 10;
+
+  maybeDeleteNotifyForLowPopulation(fixture.plugin, 's1', 2, 'test');
+
+  assert.equal(fixture.plugin.runtime.notifyThresholdByServer.s1, undefined);
 });
 
 test('handleThresholdCrossing uses configured discordRoleId mention', () => {

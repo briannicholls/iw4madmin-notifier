@@ -8,9 +8,12 @@
     "build": "node scripts/build.mjs",
     "watch": "node scripts/watch.mjs",
     "mock:dashboard": "node scripts/mock-dashboard.mjs",
-    "test": "node --test"
+    "test": "node --test",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "esbuild": "^0.25.0"
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.3",
+    "@types/node": "^24.5.2"
   }
 }
