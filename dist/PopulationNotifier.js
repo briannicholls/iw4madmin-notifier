@@ -1522,7 +1522,7 @@ var _b = (() => {
     return embed;
   }
   function buildDashboardPayload(alerts, statusSnapshotByServer) {
-    const serverKeys = sortedServerKeysByPopulation(statusSnapshotByServer).slice(0, MAX_DASHBOARD_EMBEDS);
+    const serverKeys = sortedServerKeysByPopulation(statusSnapshotByServer).slice(0, MAX_DASHBOARD_EMBEDS).reverse();
     const embeds = [];
     for (let i = 0; i < serverKeys.length; i++) {
       const serverKey = serverKeys[i];
