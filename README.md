@@ -5,7 +5,7 @@ JavaScript plugin for [IW4MAdmin](https://github.com/RaidMax/IW4M-Admin) that po
 ## What It Does
 
 - Maintains one persistent status dashboard message in a Discord channel.
-- Updates that dashboard with up to 10 server embeds, sorted by highest player count first.
+- Updates that dashboard with up to 10 server embeds, showing the most populated server at the bottom.
 - Sends separate `@here` notify messages when thresholds are crossed.
 - Enforces a global anti-spam cooldown: max one notify message every 1 hour (across all servers).
 - Auto-deletes a server's active notify message when that server drops below 3 players.
@@ -77,7 +77,7 @@ These placeholders are available in each alert `message`:
 - Startup full-server exception: if server is already full (`18/18`), startup notify is skipped.
 - Notify cooldown: only one notify send per 60 minutes globally across all servers.
 - Notify cleanup: active notify message for a server is deleted whenever observed population is below `3` players (including enter/leave activity events).
-- Status dashboard shape: one message with up to `10` embeds (top 10 by current player count; ties are sorted by server key).
+- Status dashboard shape: one message with up to `10` embeds (top 10 by current player count, rendered from lower-to-higher so the busiest server is at the bottom; ties are sorted by server key).
 - Status dashboard image size: each server card uses `embed.thumbnail` (compact) instead of full-width images.
 - Notify message format: one sentence with either `<@&discordRoleId>` (when configured) or `@here`, plus your configured threshold message.
 

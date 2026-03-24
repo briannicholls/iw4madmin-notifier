@@ -12,7 +12,7 @@ function makeSnapshot(index, playerCount) {
   };
 }
 
-test('buildDashboardPayload limits embeds and sorts by players desc', () => {
+test('buildDashboardPayload limits embeds and renders highest-populated at bottom', () => {
   const byServer = {};
   for (let i = 0; i < 14; i++) {
     byServer['s' + i] = makeSnapshot(i, i);
@@ -20,8 +20,10 @@ test('buildDashboardPayload limits embeds and sorts by players desc', () => {
 
   const payload = buildDashboardPayload([{ threshold: 1 }, { threshold: 6 }, { threshold: 11 }], byServer);
   assert.equal(payload.embeds.length, MAX_DASHBOARD_EMBEDS);
-  assert.equal(payload.embeds[0].title, 'Server 13');
-  assert.match(payload.embeds[0].description, /\*\*Players:\*\* 13\/18/);
+  assert.equal(payload.embeds[0].title, 'Server 4');
+  assert.match(payload.embeds[0].description, /\*\*Players:\*\* 4\/18/);
+  assert.equal(payload.embeds[payload.embeds.length - 1].title, 'Server 13');
+  assert.match(payload.embeds[payload.embeds.length - 1].description, /\*\*Players:\*\* 13\/18/);
 });
 
 test('buildDashboardPayload returns empty-state card for no servers', () => {
