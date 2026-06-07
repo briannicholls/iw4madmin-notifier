@@ -1,6 +1,11 @@
-import { DEFAULT_THUMBNAIL_BASE_URL, MAX_PLAYERS } from './config.js';
+import {
+  DEFAULT_STATUS_OFFLINE_EMOJI,
+  DEFAULT_STATUS_ONLINE_EMOJI,
+  DEFAULT_THUMBNAIL_BASE_URL,
+  MAX_PLAYERS
+} from './config.js';
 import { parseIntSafe } from './utils.js';
-import { formatNamedInfoForStatus, pickCleanString } from './server-metadata.js';
+import { pickCleanString } from './server-metadata.js';
 
 export const MAX_DASHBOARD_EMBEDS = 10;
 const MAX_EMBED_DESCRIPTION_LENGTH = 3900;
@@ -94,28 +99,39 @@ function gameLogoUrlFromGroup(group) {
   return DEFAULT_GAME_LOGO_PLACEHOLDER_URL;
 }
 
-function serverStatusEmoji(playerCount) {
-  return playerCount > 0 ? ':online_ping:' : ':offline_ping:';
+function modeTextFromSnapshot(snapshot) {
+  const modeInfo = snapshot && snapshot.modeInfo ? snapshot.modeInfo : null;
+  return pickCleanString([
+    modeInfo && modeInfo.readable,
+    snapshot && snapshot.modeText,
+    modeInfo && modeInfo.slug
+  ]) || 'unknown';
 }
 
-function formatMapForDashboard(mapInfo, fallbackText) {
+function formatMapForDashboard(snapshot) {
+  const mapInfo = snapshot && snapshot.mapInfo ? snapshot.mapInfo : null;
   return pickCleanString([
     mapInfo && mapInfo.readable,
-    fallbackText,
+    snapshot && snapshot.mapText,
     mapInfo && mapInfo.slug
   ]) || 'unknown';
 }
 
-function buildServerLine(snapshot) {
+function statusEmojiForCount(playerCount, renderOptions) {
+  const options = renderOptions || {};
+  const onlineEmoji = pickCleanString([options.onlineEmoji, DEFAULT_STATUS_ONLINE_EMOJI]);
+  const offlineEmoji = pickCleanString([options.offlineEmoji, DEFAULT_STATUS_OFFLINE_EMOJI]);
+  return playerCount > 0 ? onlineEmoji : offlineEmoji;
+}
+
+function buildServerLine(snapshot, renderOptions) {
   const serverName = String(snapshot && snapshot.serverName ? snapshot.serverName : '(unknown server)');
   const playerCount = getSnapshotCount(snapshot);
-  const mapInfo = snapshot && snapshot.mapInfo ? snapshot.mapInfo : null;
-  const modeInfo = snapshot && snapshot.modeInfo ? snapshot.modeInfo : null;
-  const mapText = formatMapForDashboard(mapInfo, snapshot && snapshot.mapText);
-  const modeText = formatNamedInfoForStatus(modeInfo, snapshot && snapshot.modeText ? snapshot.modeText : 'unknown');
+  const mapText = formatMapForDashboard(snapshot);
+  const modeText = modeTextFromSnapshot(snapshot);
 
   return truncateText(
-    serverStatusEmoji(playerCount)
+    statusEmojiForCount(playerCount, renderOptions)
     + ' **' + serverName + '**  '
     + '`' + playerCount + '/' + MAX_PLAYERS + '`\n'
     + '*' + mapText + '*\n'
@@ -164,7 +180,7 @@ function createGameGroups(statusSnapshotByServer) {
   return groups;
 }
 
-function buildGameDescription(group, extraOverflowLine) {
+function buildGameDescription(group, extraOverflowLine, renderOptions) {
   const lines = [
     '**' + group.servers.length + ' servers**\n'
     + '`' + group.totalPlayers + '/' + (group.servers.length * MAX_PLAYERS) + ' players`'
@@ -172,7 +188,7 @@ function buildGameDescription(group, extraOverflowLine) {
   let omitted = 0;
 
   for (let i = 0; i < group.servers.length; i++) {
-    const line = buildServerLine(group.servers[i]);
+    const line = buildServerLine(group.servers[i], renderOptions);
     const nextDescription = lines.concat([line]).join('\n\n');
     if (nextDescription.length > MAX_EMBED_DESCRIPTION_LENGTH) {
       omitted = group.servers.length - i;
@@ -199,16 +215,16 @@ function buildGameDescription(group, extraOverflowLine) {
   return lines.join('\n\n');
 }
 
-function buildGameEmbed(alerts, group, extraOverflowLine) {
+function buildGameEmbed(alerts, group, extraOverflowLine, renderOptions) {
   return {
     title: group.title,
-    description: buildGameDescription(group, extraOverflowLine),
+    description: buildGameDescription(group, extraOverflowLine, renderOptions),
     color: statusColorFromPlayerCount(alerts, group.maxPlayerCount),
     thumbnail: { url: gameLogoUrlFromGroup(group) }
   };
 }
 
-export function buildDashboardPayload(alerts, statusSnapshotByServer) {
+export function buildDashboardPayload(alerts, statusSnapshotByServer, renderOptions) {
   const allGameGroups = createGameGroups(statusSnapshotByServer);
   const omittedGameCount = Math.max(0, allGameGroups.length - MAX_DASHBOARD_EMBEDS);
   const gameGroups = allGameGroups.slice(0, MAX_DASHBOARD_EMBEDS);
@@ -218,7 +234,7 @@ export function buildDashboardPayload(alerts, statusSnapshotByServer) {
     const overflowLine = i === gameGroups.length - 1 && omittedGameCount > 0
       ? '_' + omittedGameCount + ' more game group' + (omittedGameCount === 1 ? '' : 's') + ' not shown._'
       : '';
-    embeds.push(buildGameEmbed(alerts, gameGroups[i], overflowLine));
+    embeds.push(buildGameEmbed(alerts, gameGroups[i], overflowLine, renderOptions));
   }
 
   if (embeds.length === 0) {

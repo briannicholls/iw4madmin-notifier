@@ -11,6 +11,8 @@ export interface PluginConfig {
   discordChannelId: string;
   discordRoleId: string;
   iw4mApiBaseUrl: string;
+  statusOnlineEmoji: string;
+  statusOfflineEmoji: string;
 }
 
 export interface NamedInfo {

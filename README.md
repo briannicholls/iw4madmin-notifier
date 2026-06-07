@@ -34,6 +34,8 @@ Config is stored under your script plugin entry key in the `config` object.
 | `discordChannelId` | string | *(empty)* | Discord channel id where status + notify messages are posted. |
 | `discordRoleId` | string | *(empty)* | Optional Discord role id to mention on notify messages. When unset, notify messages mention `@here`. |
 | `iw4mApiBaseUrl` | string | *(empty)* | Optional IW4MAdmin Webfront base URL. When set, the plugin reads `GET /api/server` to resolve each server's game code/name for grouped dashboard embeds. |
+| `statusOnlineEmoji` | string | `<a:online_ping:1512275050768760863>` | Emoji token for servers with players. For custom server emojis, use full Discord token format, e.g. `<:online_ping:123456789012345678>` (or `<a:...>` for animated). |
+| `statusOfflineEmoji` | string | `:offline_ping:` | Emoji token for empty servers. For custom server emojis, use full Discord token format, e.g. `<:offline_ping:987654321098765432>`. |
 
 Example:
 
@@ -56,7 +58,9 @@ Example:
   "discordBotToken": "BotTokenHere",
   "discordChannelId": "123456789012345678",
   "discordRoleId": "987654321098765432",
-  "iw4mApiBaseUrl": "https://your-iw4madmin.example.com"
+  "iw4mApiBaseUrl": "https://your-iw4madmin.example.com",
+  "statusOnlineEmoji": "<a:online_ping:1512275050768760863>",
+  "statusOfflineEmoji": "<a:offline_ping:1512275084813799554>"
 }
 ```
 
@@ -80,7 +84,7 @@ These placeholders are available in each alert `message`:
 - Notify cooldown: only one notify send per 60 minutes globally across all servers.
 - Notify cleanup: active notify message cleanup waits for population to remain below `3` players for 90 seconds, avoiding false resets during match-load transitions.
 - Status dashboard shape: one message with up to `10` game embeds. Servers are grouped by actual game, sorted by active population, and rendered as compact lines inside each game group.
-- Status dashboard map display: each server line shows the readable map name. The map slug is only shown as a fallback when no readable name is available.
+- Status dashboard map display: each server line shows the readable map name. The map slug is only shown as a fallback when no readable name is available. You can extend slug-to-readable overrides in `src/server-metadata/map-name-overrides.js`.
 - Status dashboard joinable status: `:online_ping:` means the server currently has players; `:offline_ping:` means the server has `0` players.
 - Status dashboard game display: when `iw4mApiBaseUrl` is configured, game names come from IW4MAdmin's `GET /api/server` response. Otherwise the plugin falls back to game fields exposed on live server/event objects.
 - Notify message format: one sentence with either `<@&discordRoleId>` (when configured) or `@here`, plus your configured threshold message.

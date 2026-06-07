@@ -127,6 +127,8 @@ var _b = (() => {
   var LOW_POPULATION_GRACE_MS = 90 * 1e3;
   var NOTIFY_MENTION_PREFIX = "@here";
   var DEFAULT_THUMBNAIL_BASE_URL = "https://iw4m.s3.us-east-2.amazonaws.com";
+  var DEFAULT_STATUS_ONLINE_EMOJI = "<a:online_ping:1512275050768760863>";
+  var DEFAULT_STATUS_OFFLINE_EMOJI = "<a:offline_ping:1512275084813799554>";
   var DEFAULT_ALERTS = [
     {
       threshold: 1,
@@ -151,7 +153,9 @@ var _b = (() => {
     discordBotToken: "",
     discordChannelId: "",
     discordRoleId: "",
-    iw4mApiBaseUrl: ""
+    iw4mApiBaseUrl: "",
+    statusOnlineEmoji: DEFAULT_STATUS_ONLINE_EMOJI,
+    statusOfflineEmoji: DEFAULT_STATUS_OFFLINE_EMOJI
   };
   function copyAlert(alert) {
     return {
@@ -198,14 +202,25 @@ var _b = (() => {
     }
     return sanitized;
   }
+  function normalizeMapKey(value) {
+    return cleanName(value).toLowerCase();
+  }
   function sanitizeConfig(rawConfig) {
     const source = rawConfig || {};
+    const statusOnlineEmoji = cleanName(
+      source.statusOnlineEmoji == null ? DEFAULT_STATUS_ONLINE_EMOJI : source.statusOnlineEmoji
+    ) || DEFAULT_STATUS_ONLINE_EMOJI;
+    const statusOfflineEmoji = cleanName(
+      source.statusOfflineEmoji == null ? DEFAULT_STATUS_OFFLINE_EMOJI : source.statusOfflineEmoji
+    ) || DEFAULT_STATUS_OFFLINE_EMOJI;
     return {
       alerts: sanitizeAlerts(source.alerts),
       discordBotToken: String(source.discordBotToken == null ? "" : source.discordBotToken).trim(),
       discordChannelId: String(source.discordChannelId == null ? "" : source.discordChannelId).trim(),
       discordRoleId: String(source.discordRoleId == null ? "" : source.discordRoleId).trim(),
-      iw4mApiBaseUrl: String(source.iw4mApiBaseUrl == null ? "" : source.iw4mApiBaseUrl).trim()
+      iw4mApiBaseUrl: String(source.iw4mApiBaseUrl == null ? "" : source.iw4mApiBaseUrl).trim(),
+      statusOnlineEmoji,
+      statusOfflineEmoji
     };
   }
   function thresholdListText(alerts) {
@@ -1050,29 +1065,43 @@ var _b = (() => {
       slug: pickCleanString([left.slug, right.slug])
     };
   }
-  function formatNamedInfoForStatus(info, unknownValue) {
-    const readable = pickCleanString([info && info.readable]);
-    const slug = pickCleanString([info && info.slug]);
-    if (readable && slug && readable.toLowerCase() !== slug.toLowerCase()) {
-      return readable + " (`" + slug + "`)";
-    }
-    if (readable) return readable;
-    if (slug) return "`" + slug + "`";
-    return unknownValue || "unknown";
+
+  // src/server-metadata/map-name-overrides.js
+  var MAP_READABLE_BY_SLUG = {
+    mp_safehouse: "Safehouse"
+  };
+  function normalizeSlug(value) {
+    const normalized = normalizeMapKey(value);
+    if (!normalized) return "";
+    return normalized.replace(/[\s-]+/g, "_").replace(/_+/g, "_").replace(/^_+|_+$/g, "");
+  }
+  function mapReadableFromSlug(slug) {
+    const key = normalizeSlug(slug);
+    if (!key) return "";
+    return cleanName(MAP_READABLE_BY_SLUG[key] || "");
   }
 
   // src/server-metadata/map-info.js
+  function withReadableFallbackFromSlug(info) {
+    const current = info || { readable: "", slug: "" };
+    const slug = pickCleanString([current.slug]);
+    const readable = pickCleanString([current.readable, mapReadableFromSlug(slug)]);
+    return {
+      readable,
+      slug
+    };
+  }
   function extractMapInfoFromObject(mapValue) {
     if (!mapValue) {
       return { readable: "", slug: "" };
     }
     if (typeof mapValue === "string") {
-      return {
+      return withReadableFallbackFromSlug({
         readable: "",
         slug: cleanName(mapValue)
-      };
+      });
     }
-    return {
+    return withReadableFallbackFromSlug({
       readable: pickCleanString([
         mapValue.alias,
         mapValue.Alias,
@@ -1094,7 +1123,7 @@ var _b = (() => {
         mapValue.Id,
         mapValue
       ])
-    };
+    });
   }
   function extractMapInfoFromServer(server) {
     if (!server) {
@@ -1103,7 +1132,7 @@ var _b = (() => {
     const fromCurrentMap = extractMapInfoFromObject(server.currentMap || server.CurrentMap);
     const fromMap = extractMapInfoFromObject(server.map || server.Map);
     const merged = mergeNamedInfo(fromCurrentMap, fromMap);
-    return {
+    return withReadableFallbackFromSlug({
       readable: pickCleanString([
         merged.readable,
         server.mapAlias,
@@ -1118,13 +1147,13 @@ var _b = (() => {
         server.currentMapName,
         server.CurrentMapName
       ])
-    };
+    });
   }
   function extractMapInfoFromEvent(eventObj) {
     if (!eventObj) {
       return { readable: "", slug: "" };
     }
-    const direct = {
+    const direct = withReadableFallbackFromSlug({
       readable: pickCleanString([
         eventObj.mapAlias,
         eventObj.MapAlias,
@@ -1139,12 +1168,14 @@ var _b = (() => {
         eventObj.currentMapName,
         eventObj.CurrentMapName
       ])
-    };
+    });
     const fromObject = extractMapInfoFromObject(
       eventObj.currentMap || eventObj.CurrentMap || eventObj.newCurrentMap || eventObj.NewCurrentMap
     );
     const fromServer = extractMapInfoFromServer(extractServerFromEvent(eventObj));
-    return mergeNamedInfo(direct, mergeNamedInfo(fromObject, fromServer));
+    return withReadableFallbackFromSlug(
+      mergeNamedInfo(direct, mergeNamedInfo(fromObject, fromServer))
+    );
   }
 
   // src/server-metadata/mode-info.js
@@ -1764,25 +1795,35 @@ var _b = (() => {
     if (placeholderText) return "https://placehold.co/128x128/png?text=" + encodeURIComponent(placeholderText);
     return DEFAULT_GAME_LOGO_PLACEHOLDER_URL;
   }
-  function serverStatusEmoji(playerCount) {
-    return playerCount > 0 ? ":online_ping:" : ":offline_ping:";
+  function modeTextFromSnapshot(snapshot) {
+    const modeInfo = snapshot && snapshot.modeInfo ? snapshot.modeInfo : null;
+    return pickCleanString([
+      modeInfo && modeInfo.readable,
+      snapshot && snapshot.modeText,
+      modeInfo && modeInfo.slug
+    ]) || "unknown";
   }
-  function formatMapForDashboard(mapInfo, fallbackText) {
+  function formatMapForDashboard(snapshot) {
+    const mapInfo = snapshot && snapshot.mapInfo ? snapshot.mapInfo : null;
     return pickCleanString([
       mapInfo && mapInfo.readable,
-      fallbackText,
+      snapshot && snapshot.mapText,
       mapInfo && mapInfo.slug
     ]) || "unknown";
   }
-  function buildServerLine(snapshot) {
+  function statusEmojiForCount(playerCount, renderOptions) {
+    const options = renderOptions || {};
+    const onlineEmoji = pickCleanString([options.onlineEmoji, DEFAULT_STATUS_ONLINE_EMOJI]);
+    const offlineEmoji = pickCleanString([options.offlineEmoji, DEFAULT_STATUS_OFFLINE_EMOJI]);
+    return playerCount > 0 ? onlineEmoji : offlineEmoji;
+  }
+  function buildServerLine(snapshot, renderOptions) {
     const serverName = String(snapshot && snapshot.serverName ? snapshot.serverName : "(unknown server)");
     const playerCount = getSnapshotCount(snapshot);
-    const mapInfo = snapshot && snapshot.mapInfo ? snapshot.mapInfo : null;
-    const modeInfo = snapshot && snapshot.modeInfo ? snapshot.modeInfo : null;
-    const mapText = formatMapForDashboard(mapInfo, snapshot && snapshot.mapText);
-    const modeText = formatNamedInfoForStatus(modeInfo, snapshot && snapshot.modeText ? snapshot.modeText : "unknown");
+    const mapText = formatMapForDashboard(snapshot);
+    const modeText = modeTextFromSnapshot(snapshot);
     return truncateText(
-      serverStatusEmoji(playerCount) + " **" + serverName + "**  `" + playerCount + "/" + MAX_PLAYERS + "`\n*" + mapText + "*\n" + modeText,
+      statusEmojiForCount(playerCount, renderOptions) + " **" + serverName + "**  `" + playerCount + "/" + MAX_PLAYERS + "`\n*" + mapText + "*\n" + modeText,
       MAX_SERVER_BLOCK_LENGTH
     );
   }
@@ -1820,13 +1861,13 @@ var _b = (() => {
     });
     return groups;
   }
-  function buildGameDescription(group, extraOverflowLine) {
+  function buildGameDescription(group, extraOverflowLine, renderOptions) {
     const lines = [
       "**" + group.servers.length + " servers**\n`" + group.totalPlayers + "/" + group.servers.length * MAX_PLAYERS + " players`"
     ];
     let omitted = 0;
     for (let i = 0; i < group.servers.length; i++) {
-      const line = buildServerLine(group.servers[i]);
+      const line = buildServerLine(group.servers[i], renderOptions);
       const nextDescription = lines.concat([line]).join("\n\n");
       if (nextDescription.length > MAX_EMBED_DESCRIPTION_LENGTH) {
         omitted = group.servers.length - i;
@@ -1849,22 +1890,22 @@ var _b = (() => {
     }
     return lines.join("\n\n");
   }
-  function buildGameEmbed(alerts, group, extraOverflowLine) {
+  function buildGameEmbed(alerts, group, extraOverflowLine, renderOptions) {
     return {
       title: group.title,
-      description: buildGameDescription(group, extraOverflowLine),
+      description: buildGameDescription(group, extraOverflowLine, renderOptions),
       color: statusColorFromPlayerCount(alerts, group.maxPlayerCount),
       thumbnail: { url: gameLogoUrlFromGroup(group) }
     };
   }
-  function buildDashboardPayload(alerts, statusSnapshotByServer) {
+  function buildDashboardPayload(alerts, statusSnapshotByServer, renderOptions) {
     const allGameGroups = createGameGroups(statusSnapshotByServer);
     const omittedGameCount = Math.max(0, allGameGroups.length - MAX_DASHBOARD_EMBEDS);
     const gameGroups = allGameGroups.slice(0, MAX_DASHBOARD_EMBEDS);
     const embeds = [];
     for (let i = 0; i < gameGroups.length; i++) {
       const overflowLine = i === gameGroups.length - 1 && omittedGameCount > 0 ? "_" + omittedGameCount + " more game group" + (omittedGameCount === 1 ? "" : "s") + " not shown._" : "";
-      embeds.push(buildGameEmbed(alerts, gameGroups[i], overflowLine));
+      embeds.push(buildGameEmbed(alerts, gameGroups[i], overflowLine, renderOptions));
     }
     if (embeds.length === 0) {
       embeds.push({
@@ -1883,7 +1924,11 @@ var _b = (() => {
   // src/status-channel.js
   function buildStatusPayload(plugin2, statusSnapshotByServer) {
     const alerts = plugin2.config && Array.isArray(plugin2.config.alerts) ? plugin2.config.alerts : [];
-    return buildDashboardPayload(alerts, statusSnapshotByServer);
+    const renderOptions = {
+      onlineEmoji: plugin2.config && plugin2.config.statusOnlineEmoji,
+      offlineEmoji: plugin2.config && plugin2.config.statusOfflineEmoji
+    };
+    return buildDashboardPayload(alerts, statusSnapshotByServer, renderOptions);
   }
   function ensureStatusSyncState(plugin2) {
     let sync = plugin2.runtime.statusDashboardSync;

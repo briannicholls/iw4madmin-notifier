@@ -3,7 +3,11 @@ import { parseIntSafe } from './utils.js';
 
 export function buildStatusPayload(plugin, statusSnapshotByServer) {
   const alerts = plugin.config && Array.isArray(plugin.config.alerts) ? plugin.config.alerts : [];
-  return buildDashboardPayload(alerts, statusSnapshotByServer);
+  const renderOptions = {
+    onlineEmoji: plugin.config && plugin.config.statusOnlineEmoji,
+    offlineEmoji: plugin.config && plugin.config.statusOfflineEmoji
+  };
+  return buildDashboardPayload(alerts, statusSnapshotByServer, renderOptions);
 }
 
 export function ensureStatusSyncState(plugin) {

@@ -1,6 +1,18 @@
 import { cleanName } from '../utils.js';
 import { extractServerFromEvent } from '../event-extractors.js';
+import { mapReadableFromSlug } from './map-name-overrides.js';
 import { mergeNamedInfo, pickCleanString } from './text.js';
+
+function withReadableFallbackFromSlug(info) {
+  const current = info || { readable: '', slug: '' };
+  const slug = pickCleanString([current.slug]);
+  const readable = pickCleanString([current.readable, mapReadableFromSlug(slug)]);
+
+  return {
+    readable: readable,
+    slug: slug
+  };
+}
 
 export function extractMapInfoFromObject(mapValue) {
   if (!mapValue) {
@@ -8,13 +20,13 @@ export function extractMapInfoFromObject(mapValue) {
   }
 
   if (typeof mapValue === 'string') {
-    return {
+    return withReadableFallbackFromSlug({
       readable: '',
       slug: cleanName(mapValue)
-    };
+    });
   }
 
-  return {
+  return withReadableFallbackFromSlug({
     readable: pickCleanString([
       mapValue.alias,
       mapValue.Alias,
@@ -36,7 +48,7 @@ export function extractMapInfoFromObject(mapValue) {
       mapValue.Id,
       mapValue
     ])
-  };
+  });
 }
 
 export function extractMapInfoFromServer(server) {
@@ -48,7 +60,7 @@ export function extractMapInfoFromServer(server) {
   const fromMap = extractMapInfoFromObject(server.map || server.Map);
   const merged = mergeNamedInfo(fromCurrentMap, fromMap);
 
-  return {
+  return withReadableFallbackFromSlug({
     readable: pickCleanString([
       merged.readable,
       server.mapAlias,
@@ -63,7 +75,7 @@ export function extractMapInfoFromServer(server) {
       server.currentMapName,
       server.CurrentMapName
     ])
-  };
+  });
 }
 
 export function extractMapInfoFromEvent(eventObj) {
@@ -71,7 +83,7 @@ export function extractMapInfoFromEvent(eventObj) {
     return { readable: '', slug: '' };
   }
 
-  const direct = {
+  const direct = withReadableFallbackFromSlug({
     readable: pickCleanString([
       eventObj.mapAlias,
       eventObj.MapAlias,
@@ -86,7 +98,7 @@ export function extractMapInfoFromEvent(eventObj) {
       eventObj.currentMapName,
       eventObj.CurrentMapName
     ])
-  };
+  });
 
   const fromObject = extractMapInfoFromObject(
     eventObj.currentMap
@@ -96,5 +108,7 @@ export function extractMapInfoFromEvent(eventObj) {
   );
 
   const fromServer = extractMapInfoFromServer(extractServerFromEvent(eventObj));
-  return mergeNamedInfo(direct, mergeNamedInfo(fromObject, fromServer));
+  return withReadableFallbackFromSlug(
+    mergeNamedInfo(direct, mergeNamedInfo(fromObject, fromServer))
+  );
 }

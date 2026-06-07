@@ -6,6 +6,8 @@ export const NOTIFY_CLEAR_BELOW_COUNT = 3;
 export const LOW_POPULATION_GRACE_MS = 90 * 1000;
 export const NOTIFY_MENTION_PREFIX = '@here';
 export const DEFAULT_THUMBNAIL_BASE_URL = 'https://iw4m.s3.us-east-2.amazonaws.com';
+export const DEFAULT_STATUS_ONLINE_EMOJI = '<a:online_ping:1512275050768760863>';
+export const DEFAULT_STATUS_OFFLINE_EMOJI = '<a:offline_ping:1512275084813799554>';
 
 const DEFAULT_ALERTS = [
   {
@@ -33,7 +35,9 @@ export const defaultConfig = {
   discordBotToken: '',
   discordChannelId: '',
   discordRoleId: '',
-  iw4mApiBaseUrl: ''
+  iw4mApiBaseUrl: '',
+  statusOnlineEmoji: DEFAULT_STATUS_ONLINE_EMOJI,
+  statusOfflineEmoji: DEFAULT_STATUS_OFFLINE_EMOJI
 };
 
 function copyAlert(alert) {
@@ -98,13 +102,21 @@ export function normalizeMapKey(value) {
 
 export function sanitizeConfig(rawConfig) {
   const source = rawConfig || {};
+  const statusOnlineEmoji = cleanName(
+    source.statusOnlineEmoji == null ? DEFAULT_STATUS_ONLINE_EMOJI : source.statusOnlineEmoji
+  ) || DEFAULT_STATUS_ONLINE_EMOJI;
+  const statusOfflineEmoji = cleanName(
+    source.statusOfflineEmoji == null ? DEFAULT_STATUS_OFFLINE_EMOJI : source.statusOfflineEmoji
+  ) || DEFAULT_STATUS_OFFLINE_EMOJI;
 
   return {
     alerts: sanitizeAlerts(source.alerts),
     discordBotToken: String(source.discordBotToken == null ? '' : source.discordBotToken).trim(),
     discordChannelId: String(source.discordChannelId == null ? '' : source.discordChannelId).trim(),
     discordRoleId: String(source.discordRoleId == null ? '' : source.discordRoleId).trim(),
-    iw4mApiBaseUrl: String(source.iw4mApiBaseUrl == null ? '' : source.iw4mApiBaseUrl).trim()
+    iw4mApiBaseUrl: String(source.iw4mApiBaseUrl == null ? '' : source.iw4mApiBaseUrl).trim(),
+    statusOnlineEmoji: statusOnlineEmoji,
+    statusOfflineEmoji: statusOfflineEmoji
   };
 }
 
