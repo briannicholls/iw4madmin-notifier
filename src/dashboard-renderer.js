@@ -95,7 +95,7 @@ function gameLogoUrlFromGroup(group) {
 }
 
 function serverStatusEmoji(playerCount) {
-  return playerCount > 0 ? ':online:' : ':offline:';
+  return playerCount > 0 ? ':online_ping:' : ':offline_ping:';
 }
 
 function formatMapForDashboard(mapInfo, fallbackText) {

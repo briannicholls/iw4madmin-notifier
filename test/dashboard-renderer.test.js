@@ -25,10 +25,10 @@ test('buildDashboardPayload groups servers by game with compact server lines', (
   assert.equal(payload.embeds.length, 2);
   assert.equal(payload.embeds[0].title, 'Call of Duty: Black Ops 2');
   assert.match(payload.embeds[0].description, /\*\*2 servers\*\*\n`10\/36 players`/);
-  assert.match(payload.embeds[0].description, /:online: \*\*Server T6 A\*\*  `7\/18`\n\*Raid\*\nTDM/);
+  assert.match(payload.embeds[0].description, /:online_ping: \*\*Server T6 A\*\*  `7\/18`\n\*Raid\*\nTDM/);
   assert.doesNotMatch(payload.embeds[0].description, /mp_raid/);
   assert.doesNotMatch(payload.embeds[0].description, /\| Map:|\| Mode:/);
-  assert.match(payload.embeds[0].description, /:online: \*\*Server T6 B\*\*  `3\/18`/);
+  assert.match(payload.embeds[0].description, /:online_ping: \*\*Server T6 B\*\*  `3\/18`/);
   assert.deepEqual(payload.embeds[0].thumbnail, { url: S3_LOGO_BASE_URL + '/Black%20Ops%202%20Logo.png' });
   assert.equal(payload.embeds[1].title, 'Call of Duty: Black Ops');
 });
@@ -45,7 +45,7 @@ test('buildDashboardPayload falls back to map slug and marks empty servers offli
   };
 
   const payload = buildDashboardPayload([{ threshold: 1 }], byServer);
-  assert.match(payload.embeds[0].description, /:offline: \*\*Server Empty\*\*  `0\/18`\n\*zombie_theater\*\nZombies/);
+  assert.match(payload.embeds[0].description, /:offline_ping: \*\*Server Empty\*\*  `0\/18`\n\*zombie_theater\*\nZombies/);
   assert.deepEqual(payload.embeds[0].thumbnail, { url: S3_LOGO_BASE_URL + '/Black%20Ops%201%20Logo.png' });
 });
 

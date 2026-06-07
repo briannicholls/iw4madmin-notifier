@@ -1765,7 +1765,7 @@ var _b = (() => {
     return DEFAULT_GAME_LOGO_PLACEHOLDER_URL;
   }
   function serverStatusEmoji(playerCount) {
-    return playerCount > 0 ? ":online:" : ":offline:";
+    return playerCount > 0 ? ":online_ping:" : ":offline_ping:";
   }
   function formatMapForDashboard(mapInfo, fallbackText) {
     return pickCleanString([

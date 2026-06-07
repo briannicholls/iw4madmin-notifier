@@ -81,7 +81,7 @@ These placeholders are available in each alert `message`:
 - Notify cleanup: active notify message cleanup waits for population to remain below `3` players for 90 seconds, avoiding false resets during match-load transitions.
 - Status dashboard shape: one message with up to `10` game embeds. Servers are grouped by actual game, sorted by active population, and rendered as compact lines inside each game group.
 - Status dashboard map display: each server line shows the readable map name. The map slug is only shown as a fallback when no readable name is available.
-- Status dashboard joinable status: `:online:` means the server currently has players; `:offline:` means the server has `0` players.
+- Status dashboard joinable status: `:online_ping:` means the server currently has players; `:offline_ping:` means the server has `0` players.
 - Status dashboard game display: when `iw4mApiBaseUrl` is configured, game names come from IW4MAdmin's `GET /api/server` response. Otherwise the plugin falls back to game fields exposed on live server/event objects.
 - Notify message format: one sentence with either `<@&discordRoleId>` (when configured) or `@here`, plus your configured threshold message.
 
@@ -90,7 +90,7 @@ These placeholders are available in each alert `message`:
 - The status dashboard no longer uses map thumbnails.
 - Each game gets a single compact embed titled with only the game name and an S3-hosted game logo thumbnail when available.
 - Each server appears as a separated block:
-  - `:online: **Server Name**  \`players/max\``
+  - `:online_ping: **Server Name**  \`players/max\``
   - `*Readable Map*`
   - `Mode Name`
 - Long game groups are truncated to stay within Discord embed limits and include a `more servers not shown` note.
