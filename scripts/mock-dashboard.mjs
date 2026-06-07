@@ -3,17 +3,40 @@ import { resolve } from 'node:path';
 import { DEFAULT_ALERTS_FOR_RENDERING, mapFilenameToSlug, MOCK_MAX_PLAYERS } from './mock-dashboard.shared.mjs';
 import { buildDashboardPayload } from '../src/dashboard-renderer.js';
 
-const MAX_EMBEDS = 10;
-const BASE_THUMBNAIL_URL = 'https://iw4m.s3.us-east-2.amazonaws.com';
-
-const MAPS = [
-  { readable: 'Aftermath', file: 'loadscreen_mp_la.jpg' },
-  { readable: 'Raid', file: 'loadscreen_mp_raid.jpg' },
-  { readable: 'Hijacked', file: 'loadscreen_mp_hijacked.jpg' },
-  { readable: 'Slums', file: 'loadscreen_mp_slums.jpg' },
-  { readable: 'Express', file: 'loadscreen_mp_express.jpg' },
-  { readable: 'Standoff', file: 'loadscreen_mp_village.jpg' },
-  { readable: 'Carrier', file: 'loadscreen_mp_carrier.jpg' }
+const GAMES = [
+  {
+    readable: 'Call of Duty: Black Ops',
+    slug: 'T5',
+    serverPrefix: 'BlackOps',
+    maps: [
+      { readable: 'Kino Der Toten', file: 'zombie_theater' },
+      { readable: 'Ascension', file: 'zombie_cosmodrome' },
+      { readable: 'Call of the Dead', file: 'zombie_coast' },
+      { readable: 'Moon', file: 'zombie_moon' }
+    ]
+  },
+  {
+    readable: 'Call of Duty: Black Ops 2',
+    slug: 'T6',
+    serverPrefix: 'BlackOps2',
+    maps: [
+      { readable: 'Raid', file: 'loadscreen_mp_raid.jpg' },
+      { readable: 'Hijacked', file: 'loadscreen_mp_hijacked.jpg' },
+      { readable: 'Tranzit', file: 'zm_transit' },
+      { readable: 'Die Rise', file: 'zm_highrise' }
+    ]
+  },
+  {
+    readable: 'Call of Duty: Modern Warfare 2',
+    slug: 'IW4',
+    serverPrefix: 'MW2',
+    maps: [
+      { readable: 'Terminal', file: 'mp_terminal' },
+      { readable: 'Highrise', file: 'mp_highrise' },
+      { readable: 'Rust', file: 'mp_rust' },
+      { readable: 'Favela', file: 'mp_favela' }
+    ]
+  }
 ];
 
 const MODES = ['Team Deathmatch', 'Domination', 'Hardpoint', 'Search & Destroy', 'Kill Confirmed'];
@@ -87,15 +110,21 @@ function buildMockSnapshots(serverCount) {
   const snapshots = [];
 
   for (let i = 0; i < serverCount; i++) {
-    const map = MAPS[Math.floor(rand() * MAPS.length)];
+    const game = GAMES[Math.floor(rand() * GAMES.length)];
+    const map = game.maps[Math.floor(rand() * game.maps.length)];
     const mode = MODES[Math.floor(rand() * MODES.length)];
-    const playerCount = Math.floor(rand() * (MOCK_MAX_PLAYERS + 1));
+    let playerCount = Math.floor(rand() * (MOCK_MAX_PLAYERS + 1));
+    if (i === 0) playerCount = 0;
     const serverNumber = String(i + 1).padStart(2, '0');
 
     snapshots.push({
       serverKey: 'server_' + serverNumber,
-      serverName: 'BlackOpsPublic #' + serverNumber,
+      serverName: game.serverPrefix + ' Public #' + serverNumber,
       playerCount: playerCount,
+      gameInfo: {
+        readable: game.readable,
+        slug: game.slug
+      },
       mapInfo: {
         readable: map.readable,
         slug: mapFilenameToSlug(map.file)
@@ -103,8 +132,7 @@ function buildMockSnapshots(serverCount) {
       modeInfo: {
         readable: mode,
         slug: ''
-      },
-      imageUrl: BASE_THUMBNAIL_URL + '/' + map.file
+      }
     });
   }
 
@@ -113,7 +141,7 @@ function buildMockSnapshots(serverCount) {
     return left.serverKey.localeCompare(right.serverKey);
   });
 
-  return snapshots.slice(0, MAX_EMBEDS);
+  return snapshots;
 }
 
 function buildPayload(serverCount) {

@@ -14,3 +14,11 @@ export {
   extractModeInfoFromServer,
   extractModeInfoFromEvent
 } from './server-metadata/mode-info.js';
+export {
+  GAME_DISPLAY_NAMES,
+  normalizeGameCode,
+  gameCodeToDisplayName,
+  extractGameInfoFromObject,
+  extractGameInfoFromServer,
+  extractGameInfoFromEvent
+} from './server-metadata/game-info.js';

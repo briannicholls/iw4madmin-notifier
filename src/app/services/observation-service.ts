@@ -1,6 +1,7 @@
 import { cleanName, getPlayerCountFromServer, getServerKey, parseIntSafe } from '../../domain/utils.js';
 import { extractNetworkIdFromClient } from '../ingress/event-extractors.js';
 import {
+  extractGameInfoFromServer,
   extractMapInfoFromServer,
   extractModeInfoFromServer,
   listKeys,
@@ -18,8 +19,10 @@ import {
   setStatusSnapshot,
   wasServerProbeLogged
 } from '../state/runtime-state.js';
+import { cachedGameInfoForServer, maybeRefreshGameMetadataFromApi } from './game-metadata-sync.js';
 
 export function refreshStatusMessages(plugin: any): void {
+  maybeRefreshGameMetadataFromApi(plugin);
   const keys = Object.keys(plugin.runtime.populationStateByServer || {});
   clearStatusSnapshots(plugin);
 
@@ -31,11 +34,16 @@ export function refreshStatusMessages(plugin: any): void {
     const state = plugin.runtime.populationStateByServer[serverKey] || {};
     const count = parseIntSafe(state.lastCount, 0);
     const serverName = cleanName(server.serverName || server.ServerName || server.hostname || server.Hostname || serverKey);
+    const gameInfo = mergeNamedInfo(
+      cachedGameInfoForServer(plugin, server, serverKey),
+      mergeNamedInfo(extractGameInfoFromServer(server), plugin.runtime.gameInfoByServer[serverKey])
+    );
     const mapInfo = mergeNamedInfo(plugin.runtime.mapInfoByServer[serverKey], extractMapInfoFromServer(server));
     const modeInfo = mergeNamedInfo(plugin.runtime.modeInfoByServer[serverKey], extractModeInfoFromServer(server));
     setStatusSnapshot(plugin, serverKey, {
       serverName: serverName,
       playerCount: count,
+      gameInfo: gameInfo,
       mapInfo: mapInfo,
       modeInfo: modeInfo
     });
@@ -50,6 +58,7 @@ export function observeServerPopulation(
   client: any,
   isDisconnect: boolean,
   source: string,
+  gameHint: any,
   mapHint: any,
   modeHint: any,
   isBootstrap: boolean
@@ -64,7 +73,15 @@ export function observeServerPopulation(
   const serverKey = getServerKey(server);
   const serverName = cleanName(server.serverName || server.ServerName || server.hostname || server.Hostname || serverKey);
   setKnownServer(plugin, serverKey, server);
+  maybeRefreshGameMetadataFromApi(plugin);
 
+  const gameInfo = mergeNamedInfo(
+    cachedGameInfoForServer(plugin, server, serverKey),
+    mergeNamedInfo(
+      gameHint,
+      mergeNamedInfo(extractGameInfoFromServer(server), plugin.runtime.gameInfoByServer[serverKey])
+    )
+  );
   const mapInfo = mergeNamedInfo(
     mapHint,
     mergeNamedInfo(extractMapInfoFromServer(server), plugin.runtime.mapInfoByServer[serverKey])
@@ -73,7 +90,7 @@ export function observeServerPopulation(
     modeHint,
     mergeNamedInfo(extractModeInfoFromServer(server), plugin.runtime.modeInfoByServer[serverKey])
   );
-  setServerMetadata(plugin, serverKey, mapInfo, modeInfo);
+  setServerMetadata(plugin, serverKey, mapInfo, modeInfo, gameInfo);
 
   if (!wasServerProbeLogged(plugin, serverKey)) {
     markServerProbeLogged(plugin, serverKey);
@@ -86,6 +103,11 @@ export function observeServerPopulation(
       serverKey,
       listKeys(server.currentMap || server.CurrentMap || server.map || server.Map, 80),
       textFromUnknown(server.gameType || server.GameType || server.gametype || server.Gametype || '(none)'));
+    plugin.logger.logInformation('{Name}: PROBE server={Server} game={Game} game_keys={GameKeys}',
+      plugin.name,
+      serverKey,
+      textFromUnknown(server.game || server.Game || server.gameName || server.GameName || '(none)'),
+      listKeys(server.game || server.Game || server.gameInfo || server.GameInfo, 80));
   }
 
   const activeNetworkIds = ensureActiveNetworkIds(plugin, serverKey);
@@ -128,6 +150,7 @@ export function observeServerPopulation(
   setStatusSnapshot(plugin, serverKey, {
     serverName: serverName,
     playerCount: playerCount,
+    gameInfo: gameInfo,
     mapInfo: mapInfo,
     modeInfo: modeInfo
   });

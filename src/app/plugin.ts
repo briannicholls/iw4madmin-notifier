@@ -26,6 +26,7 @@ function observeFromEvent(plugin: any, eventObj: unknown, source: string, isDisc
     observation.client,
     observation.isDisconnect,
     observation.source,
+    observation.gameHint,
     observation.mapHint,
     observation.modeHint,
     observation.isBootstrap
@@ -116,8 +117,8 @@ const plugin: any = {
     observeFromEvent(this, eventObj, 'match_ended', false, false);
   },
 
-  observeServerPopulation: function (server: any, client: any, isDisconnect: boolean, source: string, mapHint: any, modeHint: any, isBootstrap: boolean) {
-    observeServerPopulation(this, server, client, isDisconnect, source, mapHint, modeHint, isBootstrap);
+  observeServerPopulation: function (server: any, client: any, isDisconnect: boolean, source: string, gameHint: any, mapHint: any, modeHint: any, isBootstrap: boolean) {
+    observeServerPopulation(this, server, client, isDisconnect, source, gameHint, mapHint, modeHint, isBootstrap);
   },
 
   tellStatus: function (commandEvent: any) {

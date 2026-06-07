@@ -10,6 +10,7 @@ export interface PluginConfig {
   discordBotToken: string;
   discordChannelId: string;
   discordRoleId: string;
+  iw4mApiBaseUrl: string;
 }
 
 export interface NamedInfo {
@@ -20,8 +21,10 @@ export interface NamedInfo {
 export interface StatusSnapshot {
   serverName: string;
   playerCount: number;
+  gameInfo: NamedInfo | null;
   mapInfo: NamedInfo | null;
   modeInfo: NamedInfo | null;
+  gameText?: string;
   mapText?: string;
   modeText?: string;
   imageUrl?: string;
@@ -30,6 +33,7 @@ export interface StatusSnapshot {
 export interface RuntimePopulationState {
   initialized: boolean;
   lastCount: number | null;
+  lowPopulationSinceMs: number;
   firedByThreshold: Record<string, boolean>;
 }
 
@@ -37,6 +41,7 @@ export interface RuntimeState {
   serverByKey: Record<string, unknown>;
   activeNetworkIdsByServer: Record<string, Record<string, boolean>>;
   populationStateByServer: Record<string, RuntimePopulationState>;
+  gameInfoByServer: Record<string, NamedInfo>;
   mapInfoByServer: Record<string, NamedInfo>;
   modeInfoByServer: Record<string, NamedInfo>;
   serverProbeLoggedByServer: Record<string, boolean>;
@@ -50,6 +55,8 @@ export interface RuntimeState {
   statusDashboardFingerprint: string;
   notifyDeleteInFlightByServer: Record<string, boolean>;
   globalNotifyDispatchInFlight: boolean;
+  gameApiSyncInFlight: boolean;
+  gameApiLastSyncAtMs: number;
   missingNotifierWarned: boolean;
   startupPurgeCompleted: boolean;
   startupBootstrapStarted: boolean;

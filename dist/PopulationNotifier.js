@@ -124,6 +124,7 @@ var _b = (() => {
   var MAX_PLAYERS = 18;
   var GLOBAL_NOTIFY_COOLDOWN_MS = 60 * 60 * 1e3;
   var NOTIFY_CLEAR_BELOW_COUNT = 3;
+  var LOW_POPULATION_GRACE_MS = 90 * 1e3;
   var NOTIFY_MENTION_PREFIX = "@here";
   var DEFAULT_THUMBNAIL_BASE_URL = "https://iw4m.s3.us-east-2.amazonaws.com";
   var DEFAULT_ALERTS = [
@@ -149,7 +150,8 @@ var _b = (() => {
     alerts: DEFAULT_ALERTS.map(copyAlert),
     discordBotToken: "",
     discordChannelId: "",
-    discordRoleId: ""
+    discordRoleId: "",
+    iw4mApiBaseUrl: ""
   };
   function copyAlert(alert) {
     return {
@@ -196,16 +198,14 @@ var _b = (() => {
     }
     return sanitized;
   }
-  function normalizeMapKey(value) {
-    return cleanName(value).toLowerCase();
-  }
   function sanitizeConfig(rawConfig) {
     const source = rawConfig || {};
     return {
       alerts: sanitizeAlerts(source.alerts),
       discordBotToken: String(source.discordBotToken == null ? "" : source.discordBotToken).trim(),
       discordChannelId: String(source.discordChannelId == null ? "" : source.discordChannelId).trim(),
-      discordRoleId: String(source.discordRoleId == null ? "" : source.discordRoleId).trim()
+      discordRoleId: String(source.discordRoleId == null ? "" : source.discordRoleId).trim(),
+      iw4mApiBaseUrl: String(source.iw4mApiBaseUrl == null ? "" : source.iw4mApiBaseUrl).trim()
     };
   }
   function thresholdListText(alerts) {
@@ -896,6 +896,7 @@ var _b = (() => {
       serverByKey: {},
       activeNetworkIdsByServer: {},
       populationStateByServer: {},
+      gameInfoByServer: {},
       mapInfoByServer: {},
       modeInfoByServer: {},
       serverProbeLoggedByServer: {},
@@ -909,6 +910,8 @@ var _b = (() => {
       statusDashboardFingerprint: "",
       notifyDeleteInFlightByServer: {},
       globalNotifyDispatchInFlight: false,
+      gameApiSyncInFlight: false,
+      gameApiLastSyncAtMs: 0,
       missingNotifierWarned: false,
       startupPurgeCompleted: false,
       startupBootstrapStarted: false
@@ -920,6 +923,7 @@ var _b = (() => {
       state = {
         initialized: false,
         lastCount: null,
+        lowPopulationSinceMs: 0,
         firedByThreshold: {}
       };
       plugin2.runtime.populationStateByServer[serverKey] = state;
@@ -932,9 +936,10 @@ var _b = (() => {
   function setKnownServer(plugin2, serverKey, server) {
     plugin2.runtime.serverByKey[serverKey] = server;
   }
-  function setServerMetadata(plugin2, serverKey, mapInfo, modeInfo) {
+  function setServerMetadata(plugin2, serverKey, mapInfo, modeInfo, gameInfo) {
     plugin2.runtime.mapInfoByServer[serverKey] = mapInfo;
     plugin2.runtime.modeInfoByServer[serverKey] = modeInfo;
+    plugin2.runtime.gameInfoByServer[serverKey] = gameInfo;
   }
   function setStatusSnapshot(plugin2, serverKey, snapshot) {
     plugin2.runtime.statusSnapshotByServer[serverKey] = snapshot;
@@ -1044,6 +1049,16 @@ var _b = (() => {
       readable: pickCleanString([left.readable, right.readable]),
       slug: pickCleanString([left.slug, right.slug])
     };
+  }
+  function formatNamedInfoForStatus(info, unknownValue) {
+    const readable = pickCleanString([info && info.readable]);
+    const slug = pickCleanString([info && info.slug]);
+    if (readable && slug && readable.toLowerCase() !== slug.toLowerCase()) {
+      return readable + " (`" + slug + "`)";
+    }
+    if (readable) return readable;
+    if (slug) return "`" + slug + "`";
+    return unknownValue || "unknown";
   }
 
   // src/server-metadata/map-info.js
@@ -1190,6 +1205,137 @@ var _b = (() => {
     return mergeNamedInfo(direct, fromServer);
   }
 
+  // src/server-metadata/game-info.js
+  var GAME_DISPLAY_NAMES = {
+    IW3: "Call of Duty 4: Modern Warfare",
+    IW4: "Call of Duty: Modern Warfare 2",
+    IW5: "Call of Duty: Modern Warfare 3",
+    IW6: "Call of Duty: Ghosts",
+    T4: "Call of Duty: World at War",
+    T5: "Call of Duty: Black Ops",
+    T6: "Call of Duty: Black Ops 2",
+    T7: "Call of Duty: Black Ops 3",
+    SHG1: "Call of Duty: Advanced Warfare",
+    H1: "Call of Duty 4: Remastered",
+    H2M: "H2M-Mod"
+  };
+  function normalizeGameCode(value) {
+    return cleanName(value).toUpperCase();
+  }
+  function gameCodeToDisplayName(value) {
+    const code = normalizeGameCode(value);
+    return GAME_DISPLAY_NAMES[code] || "";
+  }
+  function gameInfoFromValue(value) {
+    const text = pickCleanString([value]);
+    if (!text) return { readable: "", slug: "" };
+    const code = normalizeGameCode(text);
+    const displayName = gameCodeToDisplayName(code);
+    if (displayName) {
+      return {
+        readable: displayName,
+        slug: code
+      };
+    }
+    return {
+      readable: text,
+      slug: code === text ? code : ""
+    };
+  }
+  function extractGameInfoFromObject(gameValue) {
+    if (!gameValue) {
+      return { readable: "", slug: "" };
+    }
+    if (typeof gameValue === "string" || typeof gameValue === "number") {
+      return gameInfoFromValue(gameValue);
+    }
+    const readableInfo = gameInfoFromValue(pickCleanString([
+      gameValue.displayName,
+      gameValue.DisplayName,
+      gameValue.name,
+      gameValue.Name,
+      gameValue.title,
+      gameValue.Title,
+      gameValue.gameName,
+      gameValue.GameName
+    ]));
+    const slugInfo = gameInfoFromValue(pickCleanString([
+      gameValue.code,
+      gameValue.Code,
+      gameValue.slug,
+      gameValue.Slug,
+      gameValue.id,
+      gameValue.Id,
+      gameValue.game,
+      gameValue.Game
+    ]));
+    return mergeNamedInfo(readableInfo, slugInfo);
+  }
+  function extractGameInfoFromServer(server) {
+    if (!server) {
+      return { readable: "", slug: "" };
+    }
+    const direct = mergeNamedInfo(
+      extractGameInfoFromObject(server.game || server.Game),
+      mergeNamedInfo(
+        extractGameInfoFromObject(server.gameInfo || server.GameInfo),
+        extractGameInfoFromObject(server.application || server.Application)
+      )
+    );
+    const fields = mergeNamedInfo(
+      gameInfoFromValue(pickCleanString([
+        server.gameDisplayName,
+        server.GameDisplayName,
+        server.gameTitle,
+        server.GameTitle,
+        server.gameName,
+        server.GameName
+      ])),
+      gameInfoFromValue(pickCleanString([
+        server.gameCode,
+        server.GameCode,
+        server.parserVersion,
+        server.ParserVersion,
+        server.rConParserVersion,
+        server.RConParserVersion,
+        server.eventParserVersion,
+        server.EventParserVersion
+      ]))
+    );
+    return mergeNamedInfo(direct, fields);
+  }
+  function extractGameInfoFromEvent(eventObj) {
+    if (!eventObj) {
+      return { readable: "", slug: "" };
+    }
+    const direct = mergeNamedInfo(
+      extractGameInfoFromObject(eventObj.game || eventObj.Game),
+      extractGameInfoFromObject(eventObj.gameInfo || eventObj.GameInfo)
+    );
+    const fields = mergeNamedInfo(
+      gameInfoFromValue(pickCleanString([
+        eventObj.gameDisplayName,
+        eventObj.GameDisplayName,
+        eventObj.gameTitle,
+        eventObj.GameTitle,
+        eventObj.gameName,
+        eventObj.GameName
+      ])),
+      gameInfoFromValue(pickCleanString([
+        eventObj.gameCode,
+        eventObj.GameCode,
+        eventObj.parserVersion,
+        eventObj.ParserVersion,
+        eventObj.rConParserVersion,
+        eventObj.RConParserVersion,
+        eventObj.eventParserVersion,
+        eventObj.EventParserVersion
+      ]))
+    );
+    const fromServer = extractGameInfoFromServer(extractServerFromEvent(eventObj));
+    return mergeNamedInfo(mergeNamedInfo(direct, fields), fromServer);
+  }
+
   // src/observation-ingress.js
   function normalizeObservationFromEvent(eventObj, options) {
     const opts = options || {};
@@ -1199,6 +1345,7 @@ var _b = (() => {
       client: extractClientFromEvent(eventObj),
       isDisconnect: opts.isDisconnect === true,
       source: String(opts.source || "unknown"),
+      gameHint: extractGameInfoFromEvent(eventObj),
       mapHint: extractMapInfoFromEvent(eventObj),
       modeHint: extractModeInfoFromEvent(eventObj),
       isBootstrap: opts.isBootstrap === true
@@ -1210,6 +1357,7 @@ var _b = (() => {
       client: null,
       isDisconnect: false,
       source: "bootstrap_manager",
+      gameHint: extractGameInfoFromServer(server),
       mapHint: extractMapInfoFromServer(server),
       modeHint: extractModeInfoFromServer(server),
       isBootstrap: true
@@ -1264,6 +1412,206 @@ var _b = (() => {
     return out;
   }
 
+  // src/app/services/game-metadata-sync.js
+  var GAME_API_SYNC_INTERVAL_MS = 60 * 1e3;
+  function responseToText2(response) {
+    if (response == null) return "";
+    if (typeof response === "string") return response;
+    try {
+      if (typeof response.body === "string") return response.body;
+      if (typeof response.content === "string") return response.content;
+      if (typeof response.data === "string") return response.data;
+    } catch (_) {
+    }
+    try {
+      return JSON.stringify(response);
+    } catch (_) {
+      try {
+        return String(response);
+      } catch (_error) {
+        return "";
+      }
+    }
+  }
+  function parseStatusCode2(response) {
+    const raw = response ? response.statusCode || response.status || response.StatusCode || response.httpStatus : null;
+    const parsed = parseInt(String(raw == null ? "" : raw), 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  function tryParseJson2(text) {
+    const body = String(text == null ? "" : text).trim();
+    if (!body) return null;
+    try {
+      return JSON.parse(body);
+    } catch (_) {
+      return null;
+    }
+  }
+  function normalizeCacheKey(value) {
+    return pickCleanString([value]).toLowerCase();
+  }
+  function buildServerApiUrl(baseUrl) {
+    const base = String(baseUrl == null ? "" : baseUrl).trim().replace(/\/+$/, "");
+    if (!base) return "";
+    if (/\/api\/server$/i.test(base)) return base;
+    return base + "/api/server";
+  }
+  function createEmptyHeaders() {
+    try {
+      const stringDict = System.Collections.Generic.Dictionary(System.String, System.String);
+      return new stringDict();
+    } catch (_) {
+      return null;
+    }
+  }
+  function requestServerRows(plugin2, url, done) {
+    try {
+      const pluginScript = importNamespace("IW4MAdmin.Application.Plugin.Script");
+      const request = new pluginScript.ScriptPluginWebRequest(
+        url,
+        "",
+        "GET",
+        "application/json",
+        createEmptyHeaders()
+      );
+      plugin2.pluginHelper.requestUrl(request, function(response) {
+        const text = responseToText2(response);
+        const parsed = tryParseJson2(text);
+        const statusCode = parseStatusCode2(response);
+        const ok = Number.isFinite(statusCode) ? statusCode >= 200 && statusCode < 300 : !!parsed;
+        done({
+          ok,
+          statusCode,
+          parsed,
+          errorText: ok ? "" : (statusCode ? "status=" + statusCode + " " : "") + snippet(text, 220)
+        });
+      });
+    } catch (error) {
+      done({
+        ok: false,
+        statusCode: null,
+        parsed: null,
+        errorText: error && error.message ? error.message : "IW4MAdmin API request setup failed"
+      });
+    }
+  }
+  function rowsFromParsedResponse(parsed) {
+    if (Array.isArray(parsed)) return parsed;
+    if (!parsed || typeof parsed !== "object") return [];
+    if (Array.isArray(parsed.servers)) return parsed.servers;
+    if (Array.isArray(parsed.Servers)) return parsed.Servers;
+    if (Array.isArray(parsed.data)) return parsed.data;
+    if (Array.isArray(parsed.Data)) return parsed.Data;
+    return [];
+  }
+  function candidateKeysFromApiRow(row) {
+    return [
+      row && row.serverId,
+      row && row.ServerId,
+      row && row.id,
+      row && row.Id,
+      row && row.listenAddress,
+      row && row.ListenAddress,
+      row && row.endpoint,
+      row && row.Endpoint,
+      row && row.hostname,
+      row && row.Hostname
+    ];
+  }
+  function namedInfoChanged(existing, next) {
+    const left = existing || {};
+    const right = next || {};
+    return String(left.readable || "") !== String(right.readable || "") || String(left.slug || "") !== String(right.slug || "");
+  }
+  function storeGameInfo(plugin2, key, gameInfo) {
+    const rawKey = pickCleanString([key]);
+    if (!rawKey) return false;
+    const normalizedKey = normalizeCacheKey(rawKey);
+    let changed = false;
+    const keys = normalizedKey && normalizedKey !== rawKey ? [rawKey, normalizedKey] : [rawKey];
+    for (let i = 0; i < keys.length; i++) {
+      const cacheKey = keys[i];
+      const existing = plugin2.runtime.gameInfoByServer[cacheKey];
+      const next = mergeNamedInfo(gameInfo, existing);
+      if (namedInfoChanged(existing, next)) changed = true;
+      plugin2.runtime.gameInfoByServer[cacheKey] = next;
+    }
+    return changed;
+  }
+  function applyServerRows(plugin2, rows) {
+    let changed = false;
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i] || {};
+      const gameInfo = extractGameInfoFromServer(row);
+      if (!pickCleanString([gameInfo.readable, gameInfo.slug])) continue;
+      const keys = candidateKeysFromApiRow(row);
+      for (let j = 0; j < keys.length; j++) {
+        changed = storeGameInfo(plugin2, keys[j], gameInfo) || changed;
+      }
+    }
+    return changed;
+  }
+  function maybeRefreshGameMetadataFromApi(plugin2) {
+    const baseUrl = plugin2 && plugin2.config ? plugin2.config.iw4mApiBaseUrl : "";
+    const apiUrl = buildServerApiUrl(baseUrl);
+    if (!apiUrl) return;
+    if (!plugin2.pluginHelper || typeof plugin2.pluginHelper.requestUrl !== "function") return;
+    if (plugin2.runtime.gameApiSyncInFlight) return;
+    const nowMs = Date.now();
+    const lastSyncAtMs = parseIntSafe(plugin2.runtime.gameApiLastSyncAtMs, 0);
+    if (lastSyncAtMs > 0 && nowMs - lastSyncAtMs < GAME_API_SYNC_INTERVAL_MS) return;
+    plugin2.runtime.gameApiSyncInFlight = true;
+    plugin2.runtime.gameApiLastSyncAtMs = nowMs;
+    requestServerRows(plugin2, apiUrl, function(result) {
+      plugin2.runtime.gameApiSyncInFlight = false;
+      if (!result.ok) {
+        plugin2.logger.logWarning(
+          "{Name}: IW4MAdmin API server metadata sync failed - {Error}",
+          plugin2.name,
+          String(result.errorText || "unknown error")
+        );
+        return;
+      }
+      const rows = rowsFromParsedResponse(result.parsed);
+      const changed = applyServerRows(plugin2, rows);
+      plugin2.logger.logInformation(
+        "{Name}: IW4MAdmin API server metadata sync loaded {Count} server(s)",
+        plugin2.name,
+        rows.length
+      );
+      if (changed && typeof plugin2.refreshStatusMessages === "function") {
+        plugin2.refreshStatusMessages();
+      }
+    });
+  }
+  function cachedGameInfoForServer(plugin2, server, serverKey) {
+    const candidates = [
+      serverKey,
+      getServerKey(server),
+      server && server.serverId,
+      server && server.ServerId,
+      server && server.id,
+      server && server.Id,
+      server && server.listenAddress,
+      server && server.ListenAddress,
+      server && server.endpoint,
+      server && server.Endpoint,
+      server && server.hostname,
+      server && server.Hostname
+    ];
+    for (let i = 0; i < candidates.length; i++) {
+      const rawKey = pickCleanString([candidates[i]]);
+      if (!rawKey) continue;
+      const direct = plugin2.runtime.gameInfoByServer[rawKey];
+      if (direct) return direct;
+      const normalized = normalizeCacheKey(rawKey);
+      if (normalized && plugin2.runtime.gameInfoByServer[normalized]) {
+        return plugin2.runtime.gameInfoByServer[normalized];
+      }
+    }
+    return { readable: "", slug: "" };
+  }
+
   // src/app/services/startup-flow.ts
   function scheduleDelayedBootstrap(plugin2) {
     if (!plugin2.pluginHelper || typeof plugin2.pluginHelper.requestNotifyAfterDelay !== "function") return;
@@ -1314,6 +1662,7 @@ var _b = (() => {
     });
   }
   function bootstrapKnownServers(plugin2) {
+    maybeRefreshGameMetadataFromApi(plugin2);
     const servers = collectServersFromManager(plugin2.manager);
     plugin2.logger.logInformation(
       "{Name}: bootstrapKnownServers discovered {Count} server(s) from manager",
@@ -1327,6 +1676,7 @@ var _b = (() => {
         observation.client,
         observation.isDisconnect,
         observation.source,
+        observation.gameHint,
         observation.mapHint,
         observation.modeHint,
         observation.isBootstrap
@@ -1334,146 +1684,33 @@ var _b = (() => {
     }
   }
 
-  // src/generated/t6-thumbnail-manifest.js
-  var T6_THUMBNAIL_FILES = {
-    "buried_zclassic_processing": "loadscreen_buried_zclassic_processing.jpg",
-    "buried_zcleansed_street": "loadscreen_buried_zcleansed_street.jpg",
-    "buried_zgrief_street": "loadscreen_buried_zgrief_street.jpg",
-    "dierise": "loadscreen_dierise.jpg",
-    "mp_bridge": "loadscreen_mp_bridge.jpg",
-    "mp_carrier": "loadscreen_mp_carrier.jpg",
-    "mp_castaway": "loadscreen_mp_castaway.jpg",
-    "mp_concert": "loadscreen_mp_concert.jpg",
-    "mp_dig": "loadscreen_mp_dig.jpg",
-    "mp_dockside": "loadscreen_mp_dockside.jpg",
-    "mp_downhill": "loadscreen_mp_downhill.jpg",
-    "mp_drone": "loadscreen_mp_drone.jpg",
-    "mp_express": "loadscreen_mp_express.jpg",
-    "mp_frostbite": "loadscreen_mp_frostbite.jpg",
-    "mp_hijacked": "loadscreen_mp_hijacked.jpg",
-    "mp_hydro": "loadscreen_mp_hydro.jpg",
-    "mp_la": "loadscreen_mp_la.jpg",
-    "mp_magma": "loadscreen_mp_magma.jpg",
-    "mp_meltdown": "loadscreen_mp_meltdown.jpg",
-    "mp_mirage": "loadscreen_mp_mirage.jpg",
-    "mp_nightclub": "loadscreen_mp_nightclub.jpg",
-    "mp_nuketown_2020": "loadscreen_mp_nuketown_2020.jpg",
-    "mp_overflow": "loadscreen_mp_overflow.jpg",
-    "mp_paintball": "loadscreen_mp_paintball.jpg",
-    "mp_podville": "loadscreen_mp_podville.jpg",
-    "mp_raid": "loadscreen_mp_raid.jpg",
-    "mp_skate": "loadscreen_mp_skate.jpg",
-    "mp_slums": "loadscreen_mp_slums.jpg",
-    "mp_socotra": "loadscreen_mp_socotra.jpg",
-    "mp_studio": "loadscreen_mp_studio.jpg",
-    "mp_takeoff": "loadscreen_mp_takeoff.jpg",
-    "mp_turbine": "loadscreen_mp_turbine.jpg",
-    "mp_uplink": "loadscreen_mp_uplink.jpg",
-    "mp_vertigo": "loadscreen_mp_vertigo.jpg",
-    "mp_village": "loadscreen_mp_village.jpg",
-    "transit_classic": "loadscreen_transit_classic.jpg",
-    "transit_dr_returned_diner": "loadscreen_transit_dr_returned_diner.jpg",
-    "transit_grief_busdepot": "loadscreen_transit_grief_busdepot.jpg",
-    "transit_grief_farm": "loadscreen_transit_grief_farm.jpg",
-    "transit_grief_town": "loadscreen_transit_grief_town.jpg",
-    "transit_standard_busdepot": "loadscreen_transit_standard_busdepot.jpg",
-    "transit_standard_farm": "loadscreen_transit_standard_farm.jpg",
-    "transit_standard_town": "loadscreen_transit_standard_town.jpg",
-    "zm_factory": "loadscreen_zm_factory.jpg",
-    "zm_hellcatraz": "loadscreen_zm_hellcatraz.jpg",
-    "zm_meat": "loadscreen_zm_meat.jpg",
-    "zm_moon": "loadscreen_zm_moon.jpg",
-    "zm_nuketown": "loadscreen_zm_nuketown.jpg",
-    "zm_prototype": "loadscreen_zm_prototype.jpg",
-    "zombie_le_tombeau": "loadscreen_zombie_le_tombeau.jpg"
-  };
-
-  // src/t6-thumbnails.js
-  function normalizeBaseUrl(value) {
-    const raw = String(value == null ? "" : value).trim();
-    if (!raw) return "";
-    return raw.replace(/\/+$/, "");
-  }
-  function normalizeCandidate(value) {
-    let key = normalizeMapKey(value);
-    if (!key) return "";
-    key = key.replace(/^loadscreen_/, "");
-    key = key.replace(/\.(jpg|jpeg|png|webp)$/i, "");
-    key = key.replace(/[\s-]+/g, "_");
-    key = key.replace(/_+/g, "_").replace(/^_+|_+$/g, "");
-    return key;
-  }
-  function addUnique(list, value) {
-    if (!value) return;
-    if (list.indexOf(value) === -1) list.push(value);
-  }
-  var ALIAS_INDEX = (() => {
-    const index = {};
-    function add(alias, key) {
-      if (!alias) return;
-      if (!index[alias]) index[alias] = [];
-      if (index[alias].indexOf(key) === -1) index[alias].push(key);
-    }
-    const keys = Object.keys(T6_THUMBNAIL_FILES);
-    for (let i = 0; i < keys.length; i++) {
-      const key = keys[i];
-      add(key, key);
-      if (key.indexOf("mp_") === 0) add(key.substring(3), key);
-      if (key.indexOf("zm_") === 0) add(key.substring(3), key);
-      if (key.indexOf("transit_") === 0) add(key.substring(8), key);
-      if (key.indexOf("buried_") === 0) add(key.substring(7), key);
-      if (key.indexOf("zombie_") === 0) add(key.substring(7), key);
-      add(key.replace(/_2020$/, ""), key);
-    }
-    return index;
-  })();
-  function resolveFileName(mapSlug, mapReadable) {
-    const candidates = [];
-    addUnique(candidates, normalizeCandidate(mapSlug));
-    addUnique(candidates, normalizeCandidate(mapReadable));
-    for (let i = 0; i < candidates.length; i++) {
-      const candidate = candidates[i];
-      const direct = T6_THUMBNAIL_FILES[candidate];
-      if (direct) return direct;
-    }
-    const prefixed = [];
-    for (let i = 0; i < candidates.length; i++) {
-      const candidate = candidates[i];
-      addUnique(prefixed, candidate);
-      if (candidate === "nuketown") {
-        addUnique(prefixed, "mp_nuketown_2020");
-        addUnique(prefixed, "zm_nuketown");
-        continue;
-      }
-      if (candidate && candidate.indexOf("mp_") !== 0) addUnique(prefixed, "mp_" + candidate);
-      if (candidate && candidate.indexOf("zm_") !== 0) addUnique(prefixed, "zm_" + candidate);
-    }
-    for (let i = 0; i < prefixed.length; i++) {
-      const candidate = prefixed[i];
-      const direct = T6_THUMBNAIL_FILES[candidate];
-      if (direct) return direct;
-    }
-    for (let i = 0; i < prefixed.length; i++) {
-      const candidate = prefixed[i];
-      const aliasHits = ALIAS_INDEX[candidate];
-      if (aliasHits && aliasHits.length === 1) {
-        const key = aliasHits[0];
-        const fileName = T6_THUMBNAIL_FILES[key];
-        if (fileName) return fileName;
-      }
-    }
-    return "";
-  }
-  function resolveT6ThumbnailUrl(mapSlug, mapReadable) {
-    const base = normalizeBaseUrl(DEFAULT_THUMBNAIL_BASE_URL);
-    if (!base) return "";
-    const fileName = resolveFileName(mapSlug, mapReadable);
-    if (!fileName) return "";
-    return base + "/" + fileName;
-  }
-
   // src/dashboard-renderer.js
   var MAX_DASHBOARD_EMBEDS = 10;
+  var MAX_EMBED_DESCRIPTION_LENGTH = 3900;
+  var MAX_SERVER_BLOCK_LENGTH = 260;
+  var GAME_LOGO_FILE_BY_CODE = {
+    IW3: "COD 4 Logo.png",
+    IW4: "MW2 Logo.png",
+    IW5: "MW3 Logo.png",
+    IW6: "Ghost Logo.png",
+    T4: "WaW Logo.png",
+    T5: "Black Ops 1 Logo.png",
+    T6: "Black Ops 2 Logo.png",
+    H1: "HMW Logo.png",
+    HMW: "HMW Logo.png"
+  };
+  var GAME_LOGO_PLACEHOLDER_TEXT_BY_CODE = {
+    T7: "T7",
+    SHG1: "SHG1",
+    H2M: "H2M"
+  };
+  var GAME_LOGO_FOLDER = "game-logos";
+  var DEFAULT_GAME_LOGO_PLACEHOLDER_URL = "https://placehold.co/128x128/png?text=Game";
+  function gameLogoUrlFromFile(fileName) {
+    const base = String(DEFAULT_THUMBNAIL_BASE_URL || "").replace(/\/+$/, "");
+    if (!base || !fileName) return "";
+    return base + "/" + GAME_LOGO_FOLDER + "/" + encodeURIComponent(fileName);
+  }
   function statusColorFromPlayerCount(alerts, playerCount) {
     const count = parseIntSafe(playerCount, 0);
     const list = Array.isArray(alerts) ? alerts : [];
@@ -1490,6 +1727,13 @@ var _b = (() => {
   function getSnapshotCount(snapshot) {
     return parseIntSafe(snapshot && snapshot.playerCount, 0);
   }
+  function truncateText(value, maxLength) {
+    const text = String(value == null ? "" : value);
+    const limit = parseIntSafe(maxLength, 0);
+    if (limit <= 0 || text.length <= limit) return text;
+    if (limit <= 3) return text.substring(0, limit);
+    return text.substring(0, limit - 3) + "...";
+  }
   function sortedServerKeysByPopulation(statusSnapshotByServer) {
     const keys = Object.keys(statusSnapshotByServer || {});
     keys.sort(function(leftKey, rightKey) {
@@ -1500,35 +1744,127 @@ var _b = (() => {
     });
     return keys;
   }
-  function buildServerEmbed(alerts, snapshot) {
+  function gameTitleFromSnapshot(snapshot) {
+    const gameInfo = snapshot && snapshot.gameInfo ? snapshot.gameInfo : null;
+    return pickCleanString([
+      gameInfo && gameInfo.readable,
+      snapshot && snapshot.gameText,
+      gameInfo && gameInfo.slug
+    ]) || "Unknown Game";
+  }
+  function gameSlugFromSnapshot(snapshot) {
+    const gameInfo = snapshot && snapshot.gameInfo ? snapshot.gameInfo : null;
+    return pickCleanString([gameInfo && gameInfo.slug]).toUpperCase();
+  }
+  function gameLogoUrlFromGroup(group) {
+    const slug = pickCleanString([group && group.slug]).toUpperCase();
+    const s3Url = gameLogoUrlFromFile(GAME_LOGO_FILE_BY_CODE[slug]);
+    if (s3Url) return s3Url;
+    const placeholderText = GAME_LOGO_PLACEHOLDER_TEXT_BY_CODE[slug];
+    if (placeholderText) return "https://placehold.co/128x128/png?text=" + encodeURIComponent(placeholderText);
+    return DEFAULT_GAME_LOGO_PLACEHOLDER_URL;
+  }
+  function serverStatusEmoji(playerCount) {
+    return playerCount > 0 ? ":online:" : ":offline:";
+  }
+  function formatMapForDashboard(mapInfo, fallbackText) {
+    return pickCleanString([
+      mapInfo && mapInfo.readable,
+      fallbackText,
+      mapInfo && mapInfo.slug
+    ]) || "unknown";
+  }
+  function buildServerLine(snapshot) {
     const serverName = String(snapshot && snapshot.serverName ? snapshot.serverName : "(unknown server)");
     const playerCount = getSnapshotCount(snapshot);
     const mapInfo = snapshot && snapshot.mapInfo ? snapshot.mapInfo : null;
     const modeInfo = snapshot && snapshot.modeInfo ? snapshot.modeInfo : null;
-    const mapReadable = pickCleanString([mapInfo && mapInfo.readable, snapshot && snapshot.mapText]);
-    const mapSlug = pickCleanString([mapInfo && mapInfo.slug]);
-    const modeReadable = pickCleanString([modeInfo && modeInfo.readable, snapshot && snapshot.modeText]);
-    const mapText = mapReadable || "unknown";
-    const modeText = modeReadable || "unknown";
-    const imageUrl = pickCleanString([snapshot && snapshot.imageUrl]) || resolveT6ThumbnailUrl(mapSlug, mapReadable);
-    const embed = {
-      title: serverName,
-      description: "**Players:** " + playerCount + "/" + MAX_PLAYERS + "\n**Map:** " + mapText + "\n**Mode:** " + modeText,
-      color: statusColorFromPlayerCount(alerts, playerCount)
-    };
-    if (imageUrl) {
-      embed.thumbnail = { url: imageUrl };
-    }
-    return embed;
+    const mapText = formatMapForDashboard(mapInfo, snapshot && snapshot.mapText);
+    const modeText = formatNamedInfoForStatus(modeInfo, snapshot && snapshot.modeText ? snapshot.modeText : "unknown");
+    return truncateText(
+      serverStatusEmoji(playerCount) + " **" + serverName + "**  `" + playerCount + "/" + MAX_PLAYERS + "`\n*" + mapText + "*\n" + modeText,
+      MAX_SERVER_BLOCK_LENGTH
+    );
   }
-  function buildDashboardPayload(alerts, statusSnapshotByServer) {
-    const serverKeys = sortedServerKeysByPopulation(statusSnapshotByServer).slice(0, MAX_DASHBOARD_EMBEDS).reverse();
-    const embeds = [];
+  function createGameGroups(statusSnapshotByServer) {
+    const groupsByTitle = {};
+    const serverKeys = sortedServerKeysByPopulation(statusSnapshotByServer);
     for (let i = 0; i < serverKeys.length; i++) {
       const serverKey = serverKeys[i];
       const snapshot = statusSnapshotByServer[serverKey];
       if (!snapshot) continue;
-      embeds.push(buildServerEmbed(alerts, snapshot));
+      const title = gameTitleFromSnapshot(snapshot);
+      if (!groupsByTitle[title]) {
+        groupsByTitle[title] = {
+          title,
+          slug: gameSlugFromSnapshot(snapshot),
+          servers: [],
+          totalPlayers: 0,
+          maxPlayerCount: 0
+        };
+      } else if (!groupsByTitle[title].slug) {
+        groupsByTitle[title].slug = gameSlugFromSnapshot(snapshot);
+      }
+      const playerCount = getSnapshotCount(snapshot);
+      groupsByTitle[title].servers.push(snapshot);
+      groupsByTitle[title].totalPlayers += playerCount;
+      if (playerCount > groupsByTitle[title].maxPlayerCount) {
+        groupsByTitle[title].maxPlayerCount = playerCount;
+      }
+    }
+    const groups = Object.values(groupsByTitle);
+    groups.sort(function(left, right) {
+      if (left.totalPlayers !== right.totalPlayers) return right.totalPlayers - left.totalPlayers;
+      if (left.maxPlayerCount !== right.maxPlayerCount) return right.maxPlayerCount - left.maxPlayerCount;
+      return left.title.localeCompare(right.title);
+    });
+    return groups;
+  }
+  function buildGameDescription(group, extraOverflowLine) {
+    const lines = [
+      "**" + group.servers.length + " servers**\n`" + group.totalPlayers + "/" + group.servers.length * MAX_PLAYERS + " players`"
+    ];
+    let omitted = 0;
+    for (let i = 0; i < group.servers.length; i++) {
+      const line = buildServerLine(group.servers[i]);
+      const nextDescription = lines.concat([line]).join("\n\n");
+      if (nextDescription.length > MAX_EMBED_DESCRIPTION_LENGTH) {
+        omitted = group.servers.length - i;
+        break;
+      }
+      lines.push(line);
+    }
+    if (omitted > 0) {
+      const overflowLine = "_" + omitted + " more server" + (omitted === 1 ? "" : "s") + " not shown._";
+      const nextDescription = lines.concat([overflowLine]).join("\n\n");
+      if (nextDescription.length <= MAX_EMBED_DESCRIPTION_LENGTH) {
+        lines.push(overflowLine);
+      }
+    }
+    if (extraOverflowLine) {
+      const nextDescription = lines.concat([extraOverflowLine]).join("\n\n");
+      if (nextDescription.length <= MAX_EMBED_DESCRIPTION_LENGTH) {
+        lines.push(extraOverflowLine);
+      }
+    }
+    return lines.join("\n\n");
+  }
+  function buildGameEmbed(alerts, group, extraOverflowLine) {
+    return {
+      title: group.title,
+      description: buildGameDescription(group, extraOverflowLine),
+      color: statusColorFromPlayerCount(alerts, group.maxPlayerCount),
+      thumbnail: { url: gameLogoUrlFromGroup(group) }
+    };
+  }
+  function buildDashboardPayload(alerts, statusSnapshotByServer) {
+    const allGameGroups = createGameGroups(statusSnapshotByServer);
+    const omittedGameCount = Math.max(0, allGameGroups.length - MAX_DASHBOARD_EMBEDS);
+    const gameGroups = allGameGroups.slice(0, MAX_DASHBOARD_EMBEDS);
+    const embeds = [];
+    for (let i = 0; i < gameGroups.length; i++) {
+      const overflowLine = i === gameGroups.length - 1 && omittedGameCount > 0 ? "_" + omittedGameCount + " more game group" + (omittedGameCount === 1 ? "" : "s") + " not shown._" : "";
+      embeds.push(buildGameEmbed(alerts, gameGroups[i], overflowLine));
     }
     if (embeds.length === 0) {
       embeds.push({
@@ -1967,12 +2303,65 @@ var _b = (() => {
     );
     handleThresholdCrossing(plugin2, highestMet, serverKey, serverName, playerCount, true, "startup_snapshot");
   }
+  function observationNowMs(meta) {
+    return parseIntSafe(meta && meta.nowMs, Date.now());
+  }
+  function shouldHoldForLowPopulationGrace(plugin2, serverKey, playerCount, previousCount, state, meta) {
+    if (playerCount >= NOTIFY_CLEAR_BELOW_COUNT) {
+      if (parseIntSafe(state.lowPopulationSinceMs, 0) > 0) {
+        plugin2.logger.logInformation(
+          "{Name}: Low-population grace cleared server={Server} count={Count}",
+          plugin2.name,
+          serverKey,
+          playerCount
+        );
+        state.lowPopulationSinceMs = 0;
+      }
+      return false;
+    }
+    if (previousCount < NOTIFY_CLEAR_BELOW_COUNT) return false;
+    const nowMs = observationNowMs(meta);
+    let lowPopulationSinceMs = parseIntSafe(state.lowPopulationSinceMs, 0);
+    if (lowPopulationSinceMs <= 0) {
+      lowPopulationSinceMs = nowMs;
+      state.lowPopulationSinceMs = lowPopulationSinceMs;
+      plugin2.logger.logInformation(
+        "{Name}: Low-population grace started server={Server} previous={Previous} current={Current} grace_ms={GraceMs}",
+        plugin2.name,
+        serverKey,
+        previousCount,
+        playerCount,
+        LOW_POPULATION_GRACE_MS
+      );
+    }
+    const elapsedMs = nowMs - lowPopulationSinceMs;
+    if (elapsedMs < LOW_POPULATION_GRACE_MS) {
+      plugin2.logger.logInformation(
+        "{Name}: Low-population observation held during grace server={Server} previous={Previous} current={Current} elapsed_ms={ElapsedMs}",
+        plugin2.name,
+        serverKey,
+        previousCount,
+        playerCount,
+        elapsedMs
+      );
+      return true;
+    }
+    plugin2.logger.logInformation(
+      "{Name}: Low-population grace expired server={Server} previous={Previous} current={Current} elapsed_ms={ElapsedMs}",
+      plugin2.name,
+      serverKey,
+      previousCount,
+      playerCount,
+      elapsedMs
+    );
+    state.lowPopulationSinceMs = 0;
+    return false;
+  }
   function evaluatePopulation(plugin2, serverKey, serverName, playerCount, observationMeta) {
     const alerts = plugin2.config.alerts || [];
     if (alerts.length === 0) return;
     const meta = observationMeta || {};
     const state = ensureServerPopulationState(plugin2, serverKey);
-    maybeDeleteNotifyForLowPopulation(plugin2, serverKey, playerCount, meta.source || "unknown");
     if (!state.initialized) {
       plugin2.logger.logInformation(
         "{Name}: Initial population snapshot source={Source} server={Server} count={Count} via={CountSource} thresholds={Thresholds}",
@@ -1990,6 +2379,11 @@ var _b = (() => {
       return;
     }
     const previousCount = parseIntSafe(state.lastCount, playerCount);
+    if (shouldHoldForLowPopulationGrace(plugin2, serverKey, playerCount, previousCount, state, meta)) {
+      saveServerPopulationState(plugin2, serverKey, state);
+      return;
+    }
+    maybeDeleteNotifyForLowPopulation(plugin2, serverKey, playerCount, meta.source || "unknown");
     if (previousCount !== playerCount) {
       plugin2.logger.logInformation(
         "{Name}: Population changed source={Source} server={Server} previous={Previous} current={Current} via={CountSource} tracked_ids={TrackedIds}",
@@ -2038,6 +2432,7 @@ var _b = (() => {
 
   // src/app/services/observation-service.ts
   function refreshStatusMessages(plugin2) {
+    maybeRefreshGameMetadataFromApi(plugin2);
     const keys = Object.keys(plugin2.runtime.populationStateByServer || {});
     clearStatusSnapshots(plugin2);
     for (let i = 0; i < keys.length; i++) {
@@ -2047,18 +2442,23 @@ var _b = (() => {
       const state = plugin2.runtime.populationStateByServer[serverKey] || {};
       const count = parseIntSafe(state.lastCount, 0);
       const serverName = cleanName(server.serverName || server.ServerName || server.hostname || server.Hostname || serverKey);
+      const gameInfo = mergeNamedInfo(
+        cachedGameInfoForServer(plugin2, server, serverKey),
+        mergeNamedInfo(extractGameInfoFromServer(server), plugin2.runtime.gameInfoByServer[serverKey])
+      );
       const mapInfo = mergeNamedInfo(plugin2.runtime.mapInfoByServer[serverKey], extractMapInfoFromServer(server));
       const modeInfo = mergeNamedInfo(plugin2.runtime.modeInfoByServer[serverKey], extractModeInfoFromServer(server));
       setStatusSnapshot(plugin2, serverKey, {
         serverName,
         playerCount: count,
+        gameInfo,
         mapInfo,
         modeInfo
       });
     }
     ensureStatusMessage(plugin2);
   }
-  function observeServerPopulation(plugin2, server, client, isDisconnect, source, mapHint, modeHint, isBootstrap) {
+  function observeServerPopulation(plugin2, server, client, isDisconnect, source, gameHint, mapHint, modeHint, isBootstrap) {
     if (!server) {
       plugin2.logger.logWarning(
         "{Name}: Population observation skipped because server was null (source={Source})",
@@ -2070,6 +2470,14 @@ var _b = (() => {
     const serverKey = getServerKey(server);
     const serverName = cleanName(server.serverName || server.ServerName || server.hostname || server.Hostname || serverKey);
     setKnownServer(plugin2, serverKey, server);
+    maybeRefreshGameMetadataFromApi(plugin2);
+    const gameInfo = mergeNamedInfo(
+      cachedGameInfoForServer(plugin2, server, serverKey),
+      mergeNamedInfo(
+        gameHint,
+        mergeNamedInfo(extractGameInfoFromServer(server), plugin2.runtime.gameInfoByServer[serverKey])
+      )
+    );
     const mapInfo = mergeNamedInfo(
       mapHint,
       mergeNamedInfo(extractMapInfoFromServer(server), plugin2.runtime.mapInfoByServer[serverKey])
@@ -2078,7 +2486,7 @@ var _b = (() => {
       modeHint,
       mergeNamedInfo(extractModeInfoFromServer(server), plugin2.runtime.modeInfoByServer[serverKey])
     );
-    setServerMetadata(plugin2, serverKey, mapInfo, modeInfo);
+    setServerMetadata(plugin2, serverKey, mapInfo, modeInfo, gameInfo);
     if (!wasServerProbeLogged(plugin2, serverKey)) {
       markServerProbeLogged(plugin2, serverKey);
       plugin2.logger.logInformation(
@@ -2093,6 +2501,13 @@ var _b = (() => {
         serverKey,
         listKeys(server.currentMap || server.CurrentMap || server.map || server.Map, 80),
         textFromUnknown(server.gameType || server.GameType || server.gametype || server.Gametype || "(none)")
+      );
+      plugin2.logger.logInformation(
+        "{Name}: PROBE server={Server} game={Game} game_keys={GameKeys}",
+        plugin2.name,
+        serverKey,
+        textFromUnknown(server.game || server.Game || server.gameName || server.GameName || "(none)"),
+        listKeys(server.game || server.Game || server.gameInfo || server.GameInfo, 80)
       );
     }
     const activeNetworkIds = ensureActiveNetworkIds(plugin2, serverKey);
@@ -2132,6 +2547,7 @@ var _b = (() => {
     setStatusSnapshot(plugin2, serverKey, {
       serverName,
       playerCount,
+      gameInfo,
       mapInfo,
       modeInfo
     });
@@ -2242,6 +2658,7 @@ var _b = (() => {
       observation.client,
       observation.isDisconnect,
       observation.source,
+      observation.gameHint,
       observation.mapHint,
       observation.modeHint,
       observation.isBootstrap
@@ -2311,8 +2728,8 @@ var _b = (() => {
     onMatchEnded: function(eventObj) {
       observeFromEvent(this, eventObj, "match_ended", false, false);
     },
-    observeServerPopulation: function(server, client, isDisconnect, source, mapHint, modeHint, isBootstrap) {
-      observeServerPopulation(this, server, client, isDisconnect, source, mapHint, modeHint, isBootstrap);
+    observeServerPopulation: function(server, client, isDisconnect, source, gameHint, mapHint, modeHint, isBootstrap) {
+      observeServerPopulation(this, server, client, isDisconnect, source, gameHint, mapHint, modeHint, isBootstrap);
     },
     tellStatus: function(commandEvent) {
       tellStatus(this, commandEvent);

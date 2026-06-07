@@ -1,4 +1,4 @@
-import { MAX_PLAYERS, thresholdListText } from './config.js';
+import { LOW_POPULATION_GRACE_MS, MAX_PLAYERS, NOTIFY_CLEAR_BELOW_COUNT, thresholdListText } from './config.js';
 import { parseIntSafe } from './utils.js';
 import { handleThresholdCrossing, maybeDeleteNotifyForLowPopulation } from './threshold-notify.js';
 import { ensureServerPopulationState, saveServerPopulationState } from './plugin-state.js';
@@ -46,14 +46,64 @@ function applyStartupRules(plugin, serverKey, serverName, playerCount, state) {
   handleThresholdCrossing(plugin, highestMet, serverKey, serverName, playerCount, true, 'startup_snapshot');
 }
 
+function observationNowMs(meta) {
+  return parseIntSafe(meta && meta.nowMs, Date.now());
+}
+
+function shouldHoldForLowPopulationGrace(plugin, serverKey, playerCount, previousCount, state, meta) {
+  if (playerCount >= NOTIFY_CLEAR_BELOW_COUNT) {
+    if (parseIntSafe(state.lowPopulationSinceMs, 0) > 0) {
+      plugin.logger.logInformation('{Name}: Low-population grace cleared server={Server} count={Count}',
+        plugin.name,
+        serverKey,
+        playerCount);
+      state.lowPopulationSinceMs = 0;
+    }
+    return false;
+  }
+
+  if (previousCount < NOTIFY_CLEAR_BELOW_COUNT) return false;
+
+  const nowMs = observationNowMs(meta);
+  let lowPopulationSinceMs = parseIntSafe(state.lowPopulationSinceMs, 0);
+  if (lowPopulationSinceMs <= 0) {
+    lowPopulationSinceMs = nowMs;
+    state.lowPopulationSinceMs = lowPopulationSinceMs;
+    plugin.logger.logInformation('{Name}: Low-population grace started server={Server} previous={Previous} current={Current} grace_ms={GraceMs}',
+      plugin.name,
+      serverKey,
+      previousCount,
+      playerCount,
+      LOW_POPULATION_GRACE_MS);
+  }
+
+  const elapsedMs = nowMs - lowPopulationSinceMs;
+  if (elapsedMs < LOW_POPULATION_GRACE_MS) {
+    plugin.logger.logInformation('{Name}: Low-population observation held during grace server={Server} previous={Previous} current={Current} elapsed_ms={ElapsedMs}',
+      plugin.name,
+      serverKey,
+      previousCount,
+      playerCount,
+      elapsedMs);
+    return true;
+  }
+
+  plugin.logger.logInformation('{Name}: Low-population grace expired server={Server} previous={Previous} current={Current} elapsed_ms={ElapsedMs}',
+    plugin.name,
+    serverKey,
+    previousCount,
+    playerCount,
+    elapsedMs);
+  state.lowPopulationSinceMs = 0;
+  return false;
+}
+
 export function evaluatePopulation(plugin, serverKey, serverName, playerCount, observationMeta) {
   const alerts = plugin.config.alerts || [];
   if (alerts.length === 0) return;
 
   const meta = observationMeta || {};
   const state = ensureServerPopulationState(plugin, serverKey);
-
-  maybeDeleteNotifyForLowPopulation(plugin, serverKey, playerCount, meta.source || 'unknown');
 
   if (!state.initialized) {
     plugin.logger.logInformation('{Name}: Initial population snapshot source={Source} server={Server} count={Count} via={CountSource} thresholds={Thresholds}',
@@ -72,6 +122,13 @@ export function evaluatePopulation(plugin, serverKey, serverName, playerCount, o
   }
 
   const previousCount = parseIntSafe(state.lastCount, playerCount);
+  if (shouldHoldForLowPopulationGrace(plugin, serverKey, playerCount, previousCount, state, meta)) {
+    saveServerPopulationState(plugin, serverKey, state);
+    return;
+  }
+
+  maybeDeleteNotifyForLowPopulation(plugin, serverKey, playerCount, meta.source || 'unknown');
+
   if (previousCount !== playerCount) {
     plugin.logger.logInformation('{Name}: Population changed source={Source} server={Server} previous={Previous} current={Current} via={CountSource} tracked_ids={TrackedIds}',
       plugin.name,

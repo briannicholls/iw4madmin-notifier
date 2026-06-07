@@ -1,6 +1,7 @@
 import { parseIntSafe } from '../../domain/utils.js';
 import { collectServersFromManager } from '../discovery/server-discovery.js';
 import { normalizeBootstrapObservation } from '../ingress/observation-ingress.js';
+import { maybeRefreshGameMetadataFromApi } from './game-metadata-sync.js';
 
 export function scheduleDelayedBootstrap(plugin: any): void {
   if (!plugin.pluginHelper || typeof plugin.pluginHelper.requestNotifyAfterDelay !== 'function') return;
@@ -55,6 +56,7 @@ export function runStartupPurgeThenBootstrap(plugin: any): void {
 }
 
 export function bootstrapKnownServers(plugin: any): void {
+  maybeRefreshGameMetadataFromApi(plugin);
   const servers = collectServersFromManager(plugin.manager);
   plugin.logger.logInformation('{Name}: bootstrapKnownServers discovered {Count} server(s) from manager',
     plugin.name,
@@ -67,6 +69,7 @@ export function bootstrapKnownServers(plugin: any): void {
       observation.client,
       observation.isDisconnect,
       observation.source,
+      observation.gameHint,
       observation.mapHint,
       observation.modeHint,
       observation.isBootstrap

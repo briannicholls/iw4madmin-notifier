@@ -3,6 +3,7 @@ export function createRuntimeState() {
     serverByKey: {},
     activeNetworkIdsByServer: {},
     populationStateByServer: {},
+    gameInfoByServer: {},
     mapInfoByServer: {},
     modeInfoByServer: {},
     serverProbeLoggedByServer: {},
@@ -16,6 +17,8 @@ export function createRuntimeState() {
     statusDashboardFingerprint: '',
     notifyDeleteInFlightByServer: {},
     globalNotifyDispatchInFlight: false,
+    gameApiSyncInFlight: false,
+    gameApiLastSyncAtMs: 0,
     missingNotifierWarned: false,
     startupPurgeCompleted: false,
     startupBootstrapStarted: false
@@ -28,6 +31,7 @@ export function ensureServerPopulationState(plugin, serverKey) {
     state = {
       initialized: false,
       lastCount: null,
+      lowPopulationSinceMs: 0,
       firedByThreshold: {}
     };
     plugin.runtime.populationStateByServer[serverKey] = state;
@@ -43,9 +47,14 @@ export function setKnownServer(plugin, serverKey, server) {
   plugin.runtime.serverByKey[serverKey] = server;
 }
 
-export function setServerMetadata(plugin, serverKey, mapInfo, modeInfo) {
+export function setServerMetadata(plugin, serverKey, mapInfo, modeInfo, gameInfo) {
   plugin.runtime.mapInfoByServer[serverKey] = mapInfo;
   plugin.runtime.modeInfoByServer[serverKey] = modeInfo;
+  plugin.runtime.gameInfoByServer[serverKey] = gameInfo;
+}
+
+export function setGameMetadata(plugin, serverKey, gameInfo) {
+  plugin.runtime.gameInfoByServer[serverKey] = gameInfo;
 }
 
 export function setStatusSnapshot(plugin, serverKey, snapshot) {

@@ -5,11 +5,11 @@ JavaScript plugin for [IW4MAdmin](https://github.com/RaidMax/IW4M-Admin) that po
 ## What It Does
 
 - Maintains one persistent status dashboard message in a Discord channel.
-- Updates that dashboard with up to 10 server embeds, showing the most populated server at the bottom.
+- Updates that dashboard with compact embeds grouped by game.
 - Sends separate `@here` notify messages when thresholds are crossed.
 - Enforces a global anti-spam cooldown: max one notify message every 1 hour (across all servers).
-- Auto-deletes a server's active notify message when that server drops below 3 players.
-- Uses pre-hosted BO2 map thumbnails from the `iw4m` S3 bucket as compact embed thumbnails.
+- Auto-deletes a server's active notify message after that server remains below 3 players for 90 seconds.
+- Displays each server with joinable status, population, map name, and mode.
 
 ## Installation
 
@@ -33,6 +33,7 @@ Config is stored under your script plugin entry key in the `config` object.
 | `discordBotToken` | string | *(empty)* | Discord bot token used for channel message API calls. |
 | `discordChannelId` | string | *(empty)* | Discord channel id where status + notify messages are posted. |
 | `discordRoleId` | string | *(empty)* | Optional Discord role id to mention on notify messages. When unset, notify messages mention `@here`. |
+| `iw4mApiBaseUrl` | string | *(empty)* | Optional IW4MAdmin Webfront base URL. When set, the plugin reads `GET /api/server` to resolve each server's game code/name for grouped dashboard embeds. |
 
 Example:
 
@@ -54,7 +55,8 @@ Example:
   ],
   "discordBotToken": "BotTokenHere",
   "discordChannelId": "123456789012345678",
-  "discordRoleId": "987654321098765432"
+  "discordRoleId": "987654321098765432",
+  "iw4mApiBaseUrl": "https://your-iw4madmin.example.com"
 }
 ```
 
@@ -76,44 +78,22 @@ These placeholders are available in each alert `message`:
 - Startup behavior: if a server is already at/above thresholds, only the highest met threshold is considered.
 - Startup full-server exception: if server is already full (`18/18`), startup notify is skipped.
 - Notify cooldown: only one notify send per 60 minutes globally across all servers.
-- Notify cleanup: active notify message for a server is deleted whenever observed population is below `3` players (including enter/leave activity events).
-- Status dashboard shape: one message with up to `10` embeds (top 10 by current player count, rendered from lower-to-higher so the busiest server is at the bottom; ties are sorted by server key).
-- Status dashboard image size: each server card uses `embed.thumbnail` (compact) instead of full-width images.
+- Notify cleanup: active notify message cleanup waits for population to remain below `3` players for 90 seconds, avoiding false resets during match-load transitions.
+- Status dashboard shape: one message with up to `10` game embeds. Servers are grouped by actual game, sorted by active population, and rendered as compact lines inside each game group.
+- Status dashboard map display: each server line shows the readable map name. The map slug is only shown as a fallback when no readable name is available.
+- Status dashboard joinable status: `:online:` means the server currently has players; `:offline:` means the server has `0` players.
+- Status dashboard game display: when `iw4mApiBaseUrl` is configured, game names come from IW4MAdmin's `GET /api/server` response. Otherwise the plugin falls back to game fields exposed on live server/event objects.
 - Notify message format: one sentence with either `<@&discordRoleId>` (when configured) or `@here`, plus your configured threshold message.
 
-## Thumbnail Pipeline
+## Dashboard Layout
 
-- Thumbnail URLs are resolved against the fixed base URL: `https://iw4m.s3.us-east-2.amazonaws.com`.
-- Status embeds resolve map images as `https://iw4m.s3.us-east-2.amazonaws.com/loadscreen_<mapSlug>.jpg`.
-
-## S3 Bucket Setup
-
-- Example base URL:
-  - `https://iw4m.s3.us-east-2.amazonaws.com`
-- Required bucket/object settings:
-  - Upload all thumbnail files to bucket root with filenames like `loadscreen_mp_raid.jpg`.
-  - Ensure objects are publicly readable (`s3:GetObject`) for the files being served.
-  - Set object `Content-Type` to `image/jpeg`.
-  - Keep URLs unsigned (no temporary query params).
-- Recommended cache header:
-  - `Cache-Control: public, max-age=31536000, immutable`
-
-Minimal read-only bucket policy example:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "AllowPublicReadForThumbnails",
-      "Effect": "Allow",
-      "Principal": "*",
-      "Action": "s3:GetObject",
-      "Resource": "arn:aws:s3:::YOUR_BUCKET_NAME/*"
-    }
-  ]
-}
-```
+- The status dashboard no longer uses map thumbnails.
+- Each game gets a single compact embed titled with only the game name and an S3-hosted game logo thumbnail when available.
+- Each server appears as a separated block:
+  - `:online: **Server Name**  \`players/max\``
+  - `*Readable Map*`
+  - `Mode Name`
+- Long game groups are truncated to stay within Discord embed limits and include a `more servers not shown` note.
 
 ## In-Game Command
 
@@ -134,8 +114,7 @@ Use this when you want to preview the single-message Discord dashboard with many
 
 Notes:
 - The script auto-loads `.env` from the repo root if present (`DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID`).
-- The mock follows the same top-10 behavior as the plugin dashboard.
-- It uses compact right-side `thumbnail` images so you can preview the exact layout constraints.
+- The mock generates many servers across multiple games so you can preview grouped dashboard layout and overflow behavior.
 
 ## Troubleshooting
 

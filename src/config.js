@@ -3,6 +3,7 @@ import { cleanName, parseIntSafe, renderTemplate } from './utils.js';
 export const MAX_PLAYERS = 18;
 export const GLOBAL_NOTIFY_COOLDOWN_MS = 60 * 60 * 1000;
 export const NOTIFY_CLEAR_BELOW_COUNT = 3;
+export const LOW_POPULATION_GRACE_MS = 90 * 1000;
 export const NOTIFY_MENTION_PREFIX = '@here';
 export const DEFAULT_THUMBNAIL_BASE_URL = 'https://iw4m.s3.us-east-2.amazonaws.com';
 
@@ -31,7 +32,8 @@ export const defaultConfig = {
   alerts: DEFAULT_ALERTS.map(copyAlert),
   discordBotToken: '',
   discordChannelId: '',
-  discordRoleId: ''
+  discordRoleId: '',
+  iw4mApiBaseUrl: ''
 };
 
 function copyAlert(alert) {
@@ -101,7 +103,8 @@ export function sanitizeConfig(rawConfig) {
     alerts: sanitizeAlerts(source.alerts),
     discordBotToken: String(source.discordBotToken == null ? '' : source.discordBotToken).trim(),
     discordChannelId: String(source.discordChannelId == null ? '' : source.discordChannelId).trim(),
-    discordRoleId: String(source.discordRoleId == null ? '' : source.discordRoleId).trim()
+    discordRoleId: String(source.discordRoleId == null ? '' : source.discordRoleId).trim(),
+    iw4mApiBaseUrl: String(source.iw4mApiBaseUrl == null ? '' : source.iw4mApiBaseUrl).trim()
   };
 }
 
