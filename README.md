@@ -88,6 +88,13 @@ The dashboard updates as players join and leave. Messages configured in your `Sc
  
 Notifications delete after 90 seconds below 3 players.
 
+## Behavior Details
+
+Dashboard updates on player join/leave. It shows up to 10 game groups, sorts servers by population, and falls back to "more servers not shown" when truncated. Map names use readable names when available.
+
+Notifications fire only on upward threshold crossings. The 60-minute cooldown applies across all servers. At startup, if a server already meets multiple thresholds, only the highest one triggers. Full servers at startup skip notifications.
+
+Notifications delete after 90 seconds below 3 players. The dashboard stays up.
 
 ## Development
 
@@ -106,28 +113,6 @@ Send mock data to Discord (requires `.env` with `DISCORD_BOT_TOKEN` and `DISCORD
 ```bash
 npm run mock:dashboard -- --servers 20 --send
 ```
-
-## Behavior Details
-
-Dashboard updates on player join/leave. It shows up to 10 game groups, sorts servers by population, and falls back to "more servers not shown" when truncated. Map names use readable names when available.
-
-Notifications fire only on upward threshold crossings. The 60-minute cooldown applies across all servers. At startup, if a server already meets multiple thresholds, only the highest one triggers. Full servers at startup skip notifications.
-
-Notifications delete after 90 seconds below 3 players. The dashboard stays up.
-
-## Troubleshooting
-
-Bot not posting? Check permissions (View Channel, Send Messages, Embed Links, Manage Messages). Verify `discordBotToken` and `discordChannelId` are correct. Look for `Population Notifier` entries in IW4MAdmin logs.
-
-Dashboard not updating? Confirm IW4MAdmin runs and servers are active. Use `!popnotify` in-game to check plugin state. Verify `iw4mApiBaseUrl` or remove it.
-
-Notifications not sending? Check the 60-minute cooldown with `!popnotify`. Notifications fire only on upward crossings (must cross from below threshold). Verify role permissions if using `discordRoleId`.
-
-Map names showing as slugs? Edit `src/domain/server-metadata/map-info.ts` to add custom mappings, then rebuild.
-
-Custom emojis not working? Use full Discord format: `<:emoji_name:123456789012345678>` or `<a:emoji_name:...>` for animated.
-
-Plugin not loading? Check the file is at `<IW4MAdmin>/Plugins/PopulationNotifier.js`. Verify build output exists: `ls -lh dist/PopulationNotifier.js`.
 
 ## License
 
