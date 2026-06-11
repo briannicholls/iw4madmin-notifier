@@ -15,17 +15,11 @@ Plugin for [IW4MAdmin](https://github.com/RaidMax/IW4M-Admin) that posts Discord
 
 ## Installation
 
-1. Build the plugin:
-   ```bash
-   npm install
-   npm run build
-   ```
+1. Copy `dist/PopulationNotifier.js` to your IW4MAdmin `Plugins` folder
 
-2. Copy `dist/PopulationNotifier.js` to your IW4MAdmin `Plugins` folder
+2. Edit your config file and set up your notifications (See Configuration below) 
 
-3. Edit `<IW4MAdmin>/Configuration/ScriptPluginSettings.json`
-
-4. Restart IW4MAdmin
+3. Restart IW4MAdmin
 
 ## Configuration
 
@@ -96,29 +90,26 @@ Run `!popnotify` or `!pn` in-game to check plugin status, thresholds, and cooldo
 
 The plugin creates a status dashboard in Discord via a message with one embed per game:
 
--- [image]
-
- The dashboard updates as players join and leave. When a server crosses a threshold, the plugin sends a notification (max once per hour). Notifications delete after 90 seconds below 3 players.
+The dashboard updates as players join and leave. Messages configured in your `ScriptPluginSettings.json` are sent as the server fills (max once per hour). 
+ 
+Notifications delete after 90 seconds below 3 players.
 
 ![Dashboard Overview](images/dashboard-full.png)
 
-![Notification Alert](images/notification-alert.png)
-
-![Game Groups](images/game-groups.png)
-
 ## Development
 
-- `npm run build` compiles the plugin
-- `npm run watch` rebuilds on changes
+Available scripts:
+- `npm run build` compiles to single JS file for use as a plugin
 - `npm run typecheck` runs type checking
 - `npm test` runs tests
 - `npm run mock:dashboard` generates mock dashboard data
 
+Preview the dashboard locally with mock data:
 ```bash
 npm run mock:dashboard -- --servers 20
 ```
 
-Send mock data to Discord with `.env` set:
+Send mock data to Discord (requires `.env` with `DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID`):
 ```bash
 npm run mock:dashboard -- --servers 20 --send
 ```
