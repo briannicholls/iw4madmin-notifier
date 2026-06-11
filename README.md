@@ -78,15 +78,9 @@ You can right click an emoji in Discord to get its ID. Note that if you use an a
 5. Get channel ID: Enable Developer Mode → Right-click channel → Copy Channel ID
 6. Get role ID (optional): Right-click role → Copy Role ID
 
-![Bot Token](images/bot-token.png)
-
-![Copy Channel ID](images/copy-channel-id.png)
-
 ## Usage
 
 Run `!popnotify` or `!pn` in-game to check plugin status, thresholds, and cooldowns.
-
-![In-Game Command](images/ingame-command.png)
 
 The plugin creates a status dashboard in Discord via a message with one embed per game:
 
@@ -94,7 +88,6 @@ The dashboard updates as players join and leave. Messages configured in your `Sc
  
 Notifications delete after 90 seconds below 3 players.
 
-![Dashboard Overview](images/dashboard-full.png)
 
 ## Development
 
