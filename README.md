@@ -1,132 +1,152 @@
 # Population Notifier - IW4MAdmin Plugin
 
-JavaScript plugin for [IW4MAdmin](https://github.com/RaidMax/IW4M-Admin) that posts Discord updates for server population.
+Plugin for [IW4MAdmin](https://github.com/RaidMax/IW4M-Admin) that posts Discord notifications when your servers fill up.
 
-## What It Does
+![Status Dashboard](images/dashboard-example.png)
 
-- Maintains one persistent status dashboard message in a Discord channel.
-- Updates that dashboard with compact embeds grouped by game.
-- Sends separate `@here` notify messages when thresholds are crossed.
-- Enforces a global anti-spam cooldown: max one notify message every 1 hour (across all servers).
-- Auto-deletes a server's active notify message after that server remains below 3 players for 90 seconds.
-- Displays each server with joinable status, population, map name, and mode.
+![Notification Example](images/notification-example.png)
+
+## Features
+
+- Persistent dashboard message updates in real-time
+- Configurable player count thresholds
+- 60-minute global cooldown prevents spam
+- Auto-cleanup after 90 seconds below 3 players
+- Servers grouped by game with population, map, and mode
+- Readable map names and custom emojis
 
 ## Installation
 
-1. Run `npm install`.
-2. Run `npm run build`.
-3. Copy `dist/PopulationNotifier.js` into your IW4MAdmin `Plugins` folder.
-4. Restart IW4MAdmin.
-5. Edit plugin config in:
+1. Build the plugin:
+   ```bash
+   npm install
+   npm run build
+   ```
 
-```
-<IW4MAdmin>/Configuration/ScriptPluginSettings.json
-```
+2. Copy `dist/PopulationNotifier.js` to your IW4MAdmin `Plugins` folder
+
+3. Edit `<IW4MAdmin>/Configuration/ScriptPluginSettings.json`
+
+4. Restart IW4MAdmin
 
 ## Configuration
 
-Config is stored under your script plugin entry key in the `config` object.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `alerts` | array | `[{threshold:1,...},{threshold:6,...},{threshold:11,...}]` | Threshold/message rules. Each rule is `{ "threshold": number, "message": string }`. |
-| `discordBotToken` | string | *(empty)* | Discord bot token used for channel message API calls. |
-| `discordChannelId` | string | *(empty)* | Discord channel id where status + notify messages are posted. |
-| `discordRoleId` | string | *(empty)* | Optional Discord role id to mention on notify messages. When unset, notify messages mention `@here`. |
-| `iw4mApiBaseUrl` | string | *(empty)* | Optional IW4MAdmin Webfront base URL. When set, the plugin reads `GET /api/server` to resolve each server's game code/name for grouped dashboard embeds. |
-| `statusOnlineEmoji` | string | `<a:online_ping:1512275050768760863>` | Emoji token for servers with players. For custom server emojis, use full Discord token format, e.g. `<:online_ping:123456789012345678>` (or `<a:...>` for animated). |
-| `statusOfflineEmoji` | string | `:offline_ping:` | Emoji token for empty servers. For custom server emojis, use full Discord token format, e.g. `<:offline_ping:987654321098765432>`. |
-
-Example:
+Add this to `ScriptPluginSettings.json`:
 
 ```json
 {
-  "alerts": [
-    {
-      "threshold": 1,
-      "message": "{serverName} is getting active."
-    },
-    {
-      "threshold": 6,
-      "message": "{serverName} is filling up."
-    },
-    {
-      "threshold": 11,
-      "message": "{serverName} is getting crowded."
+  "PopulationNotifier": {
+    "config": {
+      "alerts": [
+        { "threshold": 1, "message": "{serverName} is getting active!" },
+        { "threshold": 6, "message": "{serverName} is filling up!" },
+        { "threshold": 11, "message": "{serverName} is getting crowded!" }
+      ],
+      "discordBotToken": "YOUR_BOT_TOKEN",
+      "discordChannelId": "YOUR_CHANNEL_ID",
+      "discordRoleId": "YOUR_ROLE_ID",
+      "iw4mApiBaseUrl": "https://your-iw4madmin.example.com",
+      "statusOnlineEmoji": "<a:online_ping:1512275050768760863>",
+      "statusOfflineEmoji": "<a:offline_ping:1512275084813799554>"
     }
-  ],
-  "discordBotToken": "BotTokenHere",
-  "discordChannelId": "123456789012345678",
-  "discordRoleId": "987654321098765432",
-  "iw4mApiBaseUrl": "https://your-iw4madmin.example.com",
-  "statusOnlineEmoji": "<a:online_ping:1512275050768760863>",
-  "statusOfflineEmoji": "<a:offline_ping:1512275084813799554>"
+  }
 }
 ```
 
-## Message Placeholders
+![Configuration Example](images/config-example.png)
 
-These placeholders are available in each alert `message`:
+### Config Options
 
-- `{serverName}`
-- `{serverKey}`
-- `{playerCount}`
-- `{maxPlayers}`
-- `{slotsRemaining}`
-- `{threshold}`
-- `{fillPercent}`
+| Key | Required | Description |
+|-----|----------|-------------|
+| `alerts` | Yes | Array of threshold rules with `threshold` (number) and `message` (string) |
+| `discordBotToken` | Yes | Discord bot token |
+| `discordChannelId` | Yes | Discord channel ID for messages |
+| `discordRoleId` | No | Role ID to mention (uses `@here` if not set) |
+| `iw4mApiBaseUrl` | No | IW4MAdmin webfront URL for game detection |
+| `statusOnlineEmoji` | No | Emoji for servers with players |
+| `statusOfflineEmoji` | No | Emoji for empty servers |
 
-## Behavior Rules
+### Message Placeholders
 
-- Max players is fixed at `18`.
-- Startup behavior: if a server is already at/above thresholds, only the highest met threshold is considered.
-- Startup full-server exception: if server is already full (`18/18`), startup notify is skipped.
-- Notify cooldown: only one notify send per 60 minutes globally across all servers.
-- Notify cleanup: active notify message cleanup waits for population to remain below `3` players for 90 seconds, avoiding false resets during match-load transitions.
-- Status dashboard shape: one message with up to `10` game embeds. Servers are grouped by actual game, sorted by active population, and rendered as compact lines inside each game group.
-- Status dashboard map display: each server line shows the readable map name. The map slug is only shown as a fallback when no readable name is available. You can extend slug-to-readable overrides in `src/server-metadata/map-name-overrides.js`.
-- Status dashboard joinable status: `:online_ping:` means the server currently has players; `:offline_ping:` means the server has `0` players.
-- Status dashboard game display: when `iw4mApiBaseUrl` is configured, game names come from IW4MAdmin's `GET /api/server` response. Otherwise the plugin falls back to game fields exposed on live server/event objects.
-- Notify message format: one sentence with either `<@&discordRoleId>` (when configured) or `@here`, plus your configured threshold message.
+- `{serverName}` - Server name
+- `{serverKey}` - Server identifier
+- `{playerCount}` - Current players
+- `{maxPlayers}` - Max players (18)
+- `{slotsRemaining}` - Empty slots
+- `{threshold}` - Number of players that triggers the message
+- `{fillPercent}` - Fill percentage
 
-## Dashboard Layout
+## Discord Bot Setup
 
-- The status dashboard no longer uses map thumbnails.
-- Each game gets a single compact embed titled with only the game name and an S3-hosted game logo thumbnail when available.
-- Each server appears as a separated block:
-  - `:online_ping: **Server Name**  \`players/max\``
-  - `*Readable Map*`
-  - `Mode Name`
-- Long game groups are truncated to stay within Discord embed limits and include a `more servers not shown` note.
+1. Create bot at [Discord Developer Portal](https://discord.com/developers/applications)
+2. Copy bot token from **Bot** tab
+3. Set permissions: View Channel, Send Messages, Embed Links, Manage Messages, Mention Roles (permission integer: `378880`)
+4. Invite bot using OAuth2 URL Generator
+5. Get channel ID: Enable Developer Mode → Right-click channel → Copy Channel ID
+6. Get role ID (optional): Right-click role → Copy Role ID
 
-## In-Game Command
+![Bot Token](images/bot-token.png)
 
-| Command | Alias | Permission | Description |
-|---|---|---|---|
-| `!popnotify` | `!pn` | User | Shows plugin status (thresholds, cooldown, known servers, active messages). |
+![Copy Channel ID](images/copy-channel-id.png)
 
-## Local Dashboard Mocking
+## Usage
 
-Use this when you want to preview the single-message Discord dashboard with many fake servers.
+Run `!popnotify` or `!pn` in-game to check plugin status, thresholds, and cooldowns.
 
-- Generate payload only (no Discord send):
-  - `npm run mock:dashboard`
-- Generate payload with a custom server count:
-  - `npm run mock:dashboard -- --servers 20`
-- Post a mock dashboard directly to your Discord channel:
-  - `DISCORD_BOT_TOKEN=... DISCORD_CHANNEL_ID=... npm run mock:dashboard -- --servers 20 --send`
+![In-Game Command](images/ingame-command.png)
 
-Notes:
-- The script auto-loads `.env` from the repo root if present (`DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID`).
-- The mock generates many servers across multiple games so you can preview grouped dashboard layout and overflow behavior.
+The plugin creates a status dashboard in Discord via a message with one embed per game:
+
+-- [image]
+
+ The dashboard updates as players join and leave. When a server crosses a threshold, the plugin sends a notification (max once per hour). Notifications delete after 90 seconds below 3 players.
+
+![Dashboard Overview](images/dashboard-full.png)
+
+![Notification Alert](images/notification-alert.png)
+
+![Game Groups](images/game-groups.png)
+
+## Development
+
+- `npm run build` compiles the plugin
+- `npm run watch` rebuilds on changes
+- `npm run typecheck` runs type checking
+- `npm test` runs tests
+- `npm run mock:dashboard` generates mock dashboard data
+
+```bash
+npm run mock:dashboard -- --servers 20
+```
+
+Send mock data to Discord with `.env` set:
+```bash
+npm run mock:dashboard -- --servers 20 --send
+```
+
+## Behavior Details
+
+Dashboard updates on player join/leave. It shows up to 10 game groups, sorts servers by population, and falls back to "more servers not shown" when truncated. Map names use readable names when available.
+
+Notifications fire only on upward threshold crossings. The 60-minute cooldown applies across all servers. At startup, if a server already meets multiple thresholds, only the highest one triggers. Full servers at startup skip notifications.
+
+Notifications delete after 90 seconds below 3 players. The dashboard stays up.
 
 ## Troubleshooting
 
-- Confirm bot permissions in the channel: `View Channel`, `Send Messages`, `Embed Links`, and mention permission for either `@everyone/@here` (fallback mode) or your configured role (`discordRoleId`).
-- Confirm `discordBotToken` and `discordChannelId` are both set.
-- Check IW4M logs for `Population Notifier` entries such as:
-  - `Initial population snapshot...`
-  - `Threshold crossed upward...`
-  - `Notify suppressed by global cooldown...`
-  - `Discord status message created/updated...`
-  - `Discord notify message created/updated/deleted...`
+Bot not posting? Check permissions (View Channel, Send Messages, Embed Links, Manage Messages). Verify `discordBotToken` and `discordChannelId` are correct. Look for `Population Notifier` entries in IW4MAdmin logs.
+
+Dashboard not updating? Confirm IW4MAdmin runs and servers are active. Use `!popnotify` in-game to check plugin state. Verify `iw4mApiBaseUrl` or remove it.
+
+Notifications not sending? Check the 60-minute cooldown with `!popnotify`. Notifications fire only on upward crossings (must cross from below threshold). Verify role permissions if using `discordRoleId`.
+
+Map names showing as slugs? Edit `src/domain/server-metadata/map-info.ts` to add custom mappings, then rebuild.
+
+Custom emojis not working? Use full Discord format: `<:emoji_name:123456789012345678>` or `<a:emoji_name:...>` for animated.
+
+Plugin not loading? Check the file is at `<IW4MAdmin>/Plugins/PopulationNotifier.js`. Verify build output exists: `ls -lh dist/PopulationNotifier.js`.
+
+## License
+
+[MIT License](LICENSE)
