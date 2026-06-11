@@ -2,9 +2,7 @@
 
 Plugin for [IW4MAdmin](https://github.com/RaidMax/IW4M-Admin) that posts Discord notifications when your servers fill up.
 
-![Status Dashboard](images/dashboard-example.png)
-
-![Notification Example](images/notification-example.png)
+<img width="439" height="278" alt="{745556EF-1D35-4A7B-96FC-944FF9F55533}" src="https://github.com/user-attachments/assets/2850a9ab-2ac5-4c49-bbe0-b06d92c4ea97" />
 
 ## Features
 
