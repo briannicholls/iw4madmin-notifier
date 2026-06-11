@@ -45,7 +45,7 @@ Add this to `ScriptPluginSettings.json`:
 }
 ```
 
-![Configuration Example](images/config-example.png)
+You can right click an emoji in Discord to get its ID. Note that if you use an animated emoji, you need the "a:" in front of it.
 
 ### Config Options
 
